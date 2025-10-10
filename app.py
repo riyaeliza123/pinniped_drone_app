@@ -104,8 +104,6 @@ def limit_resolution_to_temp(image_path):
     image = cv2.imread(image_path)
     h, w = image.shape[:2]
     pixel_count = h * w
-    MAX_PIXELS = 4_000_000
-    MIN_SCALE_PERCENT = 10
 
     if pixel_count <= MAX_PIXELS:
         return image_path, 1.0
