@@ -9,7 +9,8 @@ Model metrics:
 - False positive rate: ~11 %
 - Area under ROC curve = 0.83,  indicates very good model performance (0.8 – 0.9 = strong discrimination ability)
 
-| **Actual / Predicted** | **Positive** | **Negative** | **Total Actual** |
+Confusion matrix:
+| | **Predicted Positive** | **Predicted Negative** | **Total Actual** |
 |-------------------------|--------------|--------------|------------------|
 | **Actual Positive**     | TP = 284     | FN = 71      | 355              |
 | **Actual Negative**     | FP = 37      | TN = 227     | 264              |
