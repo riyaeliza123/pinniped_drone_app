@@ -115,7 +115,7 @@ def limit_resolution_to_temp(image_path):
         resized = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
 
         fd, temp_path = tempfile.mkstemp(suffix=".jpg")
-        os.close(fd)  # ✅ close file descriptor immediately
+        os.close(fd)  # close file descriptor immediately
         cv2.imwrite(temp_path, resized, [cv2.IMWRITE_JPEG_QUALITY, 85])
 
         if resized.shape[0] * resized.shape[1] <= MAX_PIXELS:
@@ -166,7 +166,7 @@ def parse_roboflow_detections(result_json):
 # STREAMLIT UI
 # -------------------------------
 st.title("Drone Imagery Pinniped Detection")
-st.markdown("Upload drone images and detect pinnipeds using a YOLOv8 model (Roboflow).")
+st.markdown("Upload drone images and detect pinnipeds using a YOLOv11 model (Roboflow).")
 
 uploaded_files = st.file_uploader("Upload Drone Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
@@ -280,4 +280,5 @@ if uploaded_files:
     st.subheader("Per-Location Summary")
     st.dataframe(folder_df)
     st.download_button("Download Location Summary CSV", folder_df.to_csv(index=False), "unique_counts.csv")
+
 
