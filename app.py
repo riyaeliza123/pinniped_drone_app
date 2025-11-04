@@ -20,7 +20,7 @@ import supervision as sv
 # -------------------------------
 API_KEY = st.secrets["ROBOWFLOW_API_KEY"]
 PROJECT_NAME = "pinnipeds-drone-imagery"
-MODEL_VERSION = 7
+MODEL_VERSION = 13
 MAX_PIXELS = 4_000_000
 MAX_SIZE_MB = 15
 MIN_SCALE_PERCENT = 10
@@ -280,3 +280,4 @@ if uploaded_files:
     st.subheader("Per-Location Summary")
     st.dataframe(folder_df)
     st.download_button("Download Location Summary CSV", folder_df.to_csv(index=False), "unique_counts.csv")
+
