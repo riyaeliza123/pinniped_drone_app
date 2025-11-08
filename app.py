@@ -20,7 +20,7 @@ import supervision as sv
 # -------------------------------
 API_KEY = st.secrets["ROBOWFLOW_API_KEY"]
 PROJECT_NAME = "pinnipeds-drone-imagery"
-MODEL_VERSION = 13
+MODEL_VERSION = 16
 MAX_PIXELS = 4_000_000
 MAX_SIZE_MB = 15
 MIN_SCALE_PERCENT = 10
@@ -72,7 +72,7 @@ def extract_gps_from_image(path):
 
 def get_location_name(lat):
     if 48 <= lat < 49:
-        return "Cowichan Tribe"
+        return "Cowichan"
     elif 49 <= lat < 50:
         return "Nanaimo"
     elif 50 <= lat < 51:
@@ -205,7 +205,8 @@ if uploaded_files:
         scale = s1 * s2
 
         # Run inference
-        result = model.predict(p2, confidence=40, overlap=30).json()
+        result = model.predict(p2, confidence=5, overlap=50).json()
+
         detections = parse_roboflow_detections(result)
         detections.xyxy *= scale
         roboflow_count = len(detections.xyxy)
