@@ -17,4 +17,13 @@ Confusion matrix:
 | **Actual Negative**     | FP = 37      | TN = 227     | 264              |
 | **Total Predicted**     | 321          | 298          | 618              |
 
+| File             | Responsibility             | Key Functions                                         |
+| ---------------- | -------------------------- | ----------------------------------------------------- |
+| `config.py`      | Configuration & model init | Constants, model                                      |
+| `exif_utils.py`  | EXIF & GPS extraction      | `extract_gps_from_image()`, `get_capture_date_time()` |
+| `image_utils.py` | Image scaling & GSD        | `limit_resolution_to_temp()`, `compute_gsd()`         |
+| `detection.py`   | Inference & parsing        | `run_detection()`, `parse_roboflow_detections()`      |
+| `clustering.py`  | Unique count estimation    | `compute_unique_counts()`                             |
+| `summaries.py`   | Output & CSV               | `display_and_download_summary()`                      |
+| `app.py`         | Streamlit UI               | User interface + orchestration                        |
 
