@@ -14,13 +14,14 @@ from pyproj import Transformer
 from roboflow import Roboflow
 import streamlit as st
 import supervision as sv
+import inspect
 
 # -------------------------------
 # CONFIGURATION
 # -------------------------------
 API_KEY = st.secrets["ROBOWFLOW_API_KEY"]
 PROJECT_NAME = "pinnipeds-drone-imagery"
-MODEL_VERSION = 16
+MODEL_VERSION = 18
 MAX_PIXELS = 4_000_000
 MAX_SIZE_MB = 15
 MIN_SCALE_PERCENT = 10
@@ -170,6 +171,20 @@ st.markdown("Upload drone images and detect pinnipeds using a YOLOv11 model (Rob
 
 uploaded_files = st.file_uploader("Upload Drone Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
+st.markdown("### ⚙️ Detection Thresholds")
+
+conf_threshold = st.slider(
+    "Minimum confidence threshold (%)",
+    min_value=0, max_value=100, value=15, step=5,
+    help="Lower = more detections (higher recall), higher = fewer false positives."
+)
+
+overlap_threshold = st.slider(
+    "Overlap (NMS) threshold (%)",
+    min_value=0, max_value=100, value=30, step=5,
+    help="Higher = keeps overlapping detections separate; lower = merges close boxes."
+)
+
 if uploaded_files:
     progress = st.progress(0)
     summary_records = []
@@ -177,6 +192,8 @@ if uploaded_files:
     max_counts = defaultdict(int)
     all_groups = set()
     out_dir = tempfile.mkdtemp()
+
+    all_detections_records = []
 
     for i, uploaded in enumerate(uploaded_files):
         # Save to temp file
@@ -204,22 +221,54 @@ if uploaded_files:
         p2, s2 = progressive_resize_to_temp(p1)
         scale = s1 * s2
 
-        # Run inference
-        result = model.predict(p2, confidence=5, overlap=50).json()
+        # Run inference with user-defined thresholds
+        result = model.predict(
+            p2,
+            confidence=conf_threshold,
+            overlap=overlap_threshold
+        ).json()
+
 
         detections = parse_roboflow_detections(result)
         detections.xyxy *= scale
         roboflow_count = len(detections.xyxy)
         max_counts[group_key] = max(max_counts[group_key], roboflow_count)
 
-        # Annotate
         annotator = sv.BoxAnnotator()
-        labeled = annotator.annotate(scene=img, detections=detections)
+
+        texts = [f"seal {conf*100:.1f}%" for conf in detections.confidence] if len(detections) > 0 else []
+
+        if "labels" in inspect.signature(annotator.annotate).parameters:
+            labeled = annotator.annotate(
+                scene=img.copy(),
+                detections=detections,
+                labels=texts
+            )
+        else:
+            labeled = annotator.annotate(
+                scene=img.copy(),
+                detections=detections,
+                text=texts
+            )
+
         save_path = os.path.join(out_dir, f"annotated_{uploaded.name}")
         cv2.imwrite(save_path, labeled)
 
         # Display annotated
         st.image(cv2.cvtColor(labeled, cv2.COLOR_BGR2RGB), caption=f"Annotated: {uploaded.name}")
+
+        # Create per-image detection details
+        if len(detections.xyxy) > 0:
+            for idx, (box, conf) in enumerate(zip(detections.xyxy, detections.confidence), start=1):
+                all_detections_records.append({
+                    "image_name": uploaded.name,
+                    "seal_id": idx,
+                    "x_min": box[0],
+                    "y_min": box[1],
+                    "x_max": box[2],
+                    "y_max": box[3],
+                    "confidence": conf
+                })
 
         # Record summary
         summary_records.append({
@@ -243,6 +292,17 @@ if uploaded_files:
             grouped_coords[group_key].append(((lat + lat_off, lon + lon_off), gsd, time))
 
         progress.progress((i + 1) / len(uploaded_files))
+
+    if all_detections_records:
+        all_detections_df = pd.DataFrame(all_detections_records)
+        st.download_button(
+            label="⬇️ Download Confidence of Pinniped detections CSV",
+            data=all_detections_df.to_csv(index=False),
+            file_name="all_pinniped_detection_conf.csv",
+            mime="text/csv"
+        )
+    else:
+        st.info("No detections found in any uploaded images.")
 
     # Deduplicate
     st.subheader("📊 Unique Pinniped Estimates")
