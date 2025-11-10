@@ -1,9 +1,12 @@
-# Pinniped census app
+# Pinniped census app using drone images
+
+## About
 Computer vision project to count number of pinnipeds in each drone image.
 294 images used for training from Campbell, Nanimo and Cowichan (Vancouver Island, Canada). Total 618 images after pre-proessing for training. 
-Test the model here: https://riyaeliza123-pinniped-drone-app.streamlit.app/
 
-Model metrics:
+#### Test the model here: https://riyaeliza123-pinniped-drone-app.streamlit.app/
+
+## Model metrics:
 - Precision: 88.6%
 - Recall: 80.1%
 - Accuracy: 82.9%
@@ -16,6 +19,8 @@ Confusion matrix:
 | **Actual Positive**     | TP = 284     | FN = 71      | 355              |
 | **Actual Negative**     | FP = 37      | TN = 227     | 264              |
 | **Total Predicted**     | 321          | 298          | 618              |
+
+## Modularized scripts and their functions:
 
 | File             | Responsibility             | Key Functions                                         |
 | ---------------- | -------------------------- | ----------------------------------------------------- |
