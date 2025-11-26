@@ -17,13 +17,20 @@ def compute_gsd(tags, img_width):
 
 def limit_resolution_to_temp(image_path):
     image = cv2.imread(image_path)
+    if image is None:
+        return image_path, 1.0
+    
     h, w = image.shape[:2]
     pixel_count = h * w
 
     if pixel_count <= MAX_PIXELS:
+        del image  # Free memory
         return image_path, 1.0
 
     scale_percent = 80
+    best_temp_path = None
+    best_scale = 1.0
+    
     while scale_percent >= MIN_SCALE_PERCENT:
         width = int(w * scale_percent / 100)
         height = int(h * scale_percent / 100)
@@ -34,17 +41,28 @@ def limit_resolution_to_temp(image_path):
         cv2.imwrite(temp_path, resized, [cv2.IMWRITE_JPEG_QUALITY, 85])
 
         if resized.shape[0] * resized.shape[1] <= MAX_PIXELS:
-            return temp_path, (w / width)
+            best_temp_path = temp_path
+            best_scale = (w / width)
+            del resized
+            break
 
         os.remove(temp_path)
         scale_percent -= 10
+        del resized
 
-    return temp_path, (w / width)
+    del image  # Free memory
+    return best_temp_path, best_scale
 
 def progressive_resize_to_temp(path):
     img = cv2.imread(path)
+    if img is None:
+        return path, 1.0
+    
     h, w = img.shape[:2]
     scale_percent = 80
+    best_tmp = None
+    best_scale = 1.0
+    
     while scale_percent >= MIN_SCALE_PERCENT:
         new_w = int(w * scale_percent / 100)
         new_h = int(h * scale_percent / 100)
@@ -52,8 +70,16 @@ def progressive_resize_to_temp(path):
         tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
         cv2.imwrite(tmp.name, resized, [cv2.IMWRITE_JPEG_QUALITY, 50])
         size_mb = os.path.getsize(tmp.name) / (1024 * 1024)
+        
         if size_mb <= MAX_SIZE_MB:
-            return tmp.name, (w / new_w)
+            best_tmp = tmp.name
+            best_scale = (w / new_w)
+            del resized
+            break
+        
         os.remove(tmp.name)
         scale_percent -= 10
-    return tmp.name, (w / new_w)
+        del resized
+    
+    del img  # Free memory
+    return best_tmp, best_scale
