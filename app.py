@@ -61,13 +61,14 @@ if uploaded_files:
 
             # Run detection
             detections = run_detection(p2, conf_threshold, overlap_threshold)
-            
-            # Load image for annotation
+
+            # Load image for annotation (resized image p2)
             img = cv2.imread(p2)
             if img is None:
                 st.warning(f"❌ Could not read image {uploaded.name}")
-                continue
-            
+                # make sure we still try to remove temp files for this image
+                raise RuntimeError("Failed to read resized image")
+
             gsd = compute_gsd({}, img.shape[1])
 
             # Do NOT modify detections in-place before annotating resized image.
@@ -129,6 +130,26 @@ if uploaded_files:
 
         except Exception as e:
             st.error(f"❌ Error processing {uploaded.name}: {str(e)}")
+            # continue to next image after ensuring temp cleanup below
+        finally:
+            # Per-image cleanup: remove original upload and intermediate resized files
+            try:
+                if 'tmp_path' in locals() and tmp_path and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+            try:
+                if 'p1' in locals() and p1 and os.path.exists(p1) and p1 != tmp_path:
+                    os.remove(p1)
+            except Exception:
+                pass
+            try:
+                if 'p2' in locals() and p2 and os.path.exists(p2) and p2 not in (tmp_path, p1):
+                    os.remove(p2)
+            except Exception:
+                pass
+            gc.collect()
+            # ensure loop continues
             continue
 
     # Cleanup temp files
