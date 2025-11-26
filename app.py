@@ -11,6 +11,8 @@ from scripts.summaries import display_and_download_summary
 import supervision as sv
 import inspect
 
+st.write("DEPLOYED KEY:", st.secrets.get("ROBOWFLOW_API_KEY"))
+
 st.title("Pinniped Detection from Drone Imagery")
 st.markdown("Upload drone images to detect seals using a YOLOv11 model (via Roboflow).")
 
