@@ -19,6 +19,7 @@ def run_detection(image_path, confidence, overlap):
     return parse_roboflow_detections(result)
 
 def run_batch_detection(image_paths, confidence, overlap):
+    """Process a batch of images and return detection results."""
     results = []
     for path in image_paths:
         result = model.predict(path, confidence=confidence, overlap=overlap).json()

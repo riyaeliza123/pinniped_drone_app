@@ -3,7 +3,7 @@ import tempfile, os, cv2
 from collections import defaultdict
 from math import cos, radians
 
-from scripts.detection import run_detection
+from scripts.detection import run_detection, run_batch_detection
 from scripts.exif_utils import extract_gps_from_image, get_capture_date_time, get_location_name
 from scripts.image_utils import limit_resolution_to_temp, progressive_resize_to_temp, compute_gsd
 from scripts.clustering import compute_unique_counts
@@ -70,61 +70,79 @@ if uploaded_files:
         preprocessed_results = list(executor.map(preprocess_image, uploaded_files))
 
     # ----------------------
-    # Detection loop
+    # Batch Detection loop (process in batches of 5-10)
     # ----------------------
+    BATCH_SIZE = 7
     progress = st.progress(0)
-    for i, data in enumerate(preprocessed_results):
-        if data["lat"] is None or data["lon"] is None:
+    
+    for batch_start in range(0, len(preprocessed_results), BATCH_SIZE):
+        batch_end = min(batch_start + BATCH_SIZE, len(preprocessed_results))
+        batch_data = preprocessed_results[batch_start:batch_end]
+        
+        # Filter images with valid GPS data
+        valid_batch = [data for data in batch_data if data["lat"] is not None and data["lon"] is not None]
+        invalid_batch = [data for data in batch_data if data["lat"] is None or data["lon"] is None]
+        
+        # Show warnings for invalid images
+        for data in invalid_batch:
             st.warning(f"No GPS data in {data['name']}. Skipping.")
+        
+        if not valid_batch:
+            progress.progress(batch_end / len(preprocessed_results))
             continue
+        
+        # Run batch detection
+        image_paths = [data["resized_path"] for data in valid_batch]
+        detections_batch = run_batch_detection(image_paths, conf_threshold, overlap_threshold)
+        
+        # Process results from batch
+        for data, detections in zip(valid_batch, detections_batch):
+            detections.xyxy *= data["scale"]
+            
+            count = len(detections.xyxy)
+            max_counts[data["group_key"]] = max(max_counts[data["group_key"]], count)
 
-        detections = run_detection(data["resized_path"], conf_threshold, overlap_threshold)
-        detections.xyxy *= data["scale"]
+            # Populate grouped_coords for clustering
+            for box in detections.xyxy:
+                xc = (box[0] + box[2]) / 2
+                yc = (box[1] + box[3]) / 2
+                dx_m = (xc - data["img"].shape[1] / 2) * data["gsd"]
+                dy_m = (yc - data["img"].shape[0] / 2) * data["gsd"]
+                lat_off = dy_m / 111320
+                lon_off = dx_m / (111320 * cos(radians(data["lat"])))
+                grouped_coords[data["group_key"]].append(((data["lat"] + lat_off, data["lon"] + lon_off), data["gsd"], data["time"]))
 
-        count = len(detections.xyxy)
-        max_counts[data["group_key"]] = max(max_counts[data["group_key"]], count)
+            # Annotate and display
+            annotator = sv.BoxAnnotator()
+            texts = [f"seal {conf*100:.1f}%" for conf in detections.confidence]
+            labeled = annotator.annotate(scene=data["img"].copy(), detections=detections, labels=texts) \
+                if "labels" in inspect.signature(annotator.annotate).parameters \
+                else annotator.annotate(scene=data["img"].copy(), detections=detections)
+            st.image(cv2.cvtColor(labeled, cv2.COLOR_BGR2RGB), caption=f"Annotated: {data['name']}")
 
-        # Populate grouped_coords for clustering
-        for box in detections.xyxy:
-            xc = (box[0] + box[2]) / 2
-            yc = (box[1] + box[3]) / 2
-            dx_m = (xc - data["img"].shape[1] / 2) * data["gsd"]
-            dy_m = (yc - data["img"].shape[0] / 2) * data["gsd"]
-            lat_off = dy_m / 111320
-            lon_off = dx_m / (111320 * cos(radians(data["lat"])))
-            grouped_coords[data["group_key"]].append(((data["lat"] + lat_off, data["lon"] + lon_off), data["gsd"], data["time"]))
+            # Save detections
+            for idx, (box, conf) in enumerate(zip(detections.xyxy, detections.confidence), start=1):
+                all_detections_records.append({
+                    "image_name": data["name"],
+                    "seal_id": idx,
+                    "x_min": box[0],
+                    "y_min": box[1],
+                    "x_max": box[2],
+                    "y_max": box[3],
+                    "confidence": conf
+                })
 
-        # Annotate and display
-        annotator = sv.BoxAnnotator()
-        texts = [f"seal {conf*100:.1f}%" for conf in detections.confidence]
-        labeled = annotator.annotate(scene=data["img"].copy(), detections=detections, labels=texts) \
-            if "labels" in inspect.signature(annotator.annotate).parameters \
-            else annotator.annotate(scene=data["img"].copy(), detections=detections)
-        st.image(cv2.cvtColor(labeled, cv2.COLOR_BGR2RGB), caption=f"Annotated: {data['name']}")
-
-        # Save detections
-        for idx, (box, conf) in enumerate(zip(detections.xyxy, detections.confidence), start=1):
-            all_detections_records.append({
+            summary_records.append({
                 "image_name": data["name"],
-                "seal_id": idx,
-                "x_min": box[0],
-                "y_min": box[1],
-                "x_max": box[2],
-                "y_max": box[3],
-                "confidence": conf
+                "pinniped_count": count,
+                "latitude": data["lat"],
+                "longitude": data["lon"],
+                "location": data["location"],
+                "date": data["date"],
+                "time": data["time"]
             })
-
-        summary_records.append({
-            "image_name": data["name"],
-            "pinniped_count": count,
-            "latitude": data["lat"],
-            "longitude": data["lon"],
-            "location": data["location"],
-            "date": data["date"],
-            "time": data["time"]
-        })
-
-        progress.progress((i + 1) / len(preprocessed_results))
+        
+        progress.progress(batch_end / len(preprocessed_results))
 
     folder_summary_records = compute_unique_counts(grouped_coords, max_counts)
     display_and_download_summary(summary_records, folder_summary_records, all_detections_records)
