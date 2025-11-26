@@ -11,8 +11,6 @@ from scripts.summaries import display_and_download_summary
 import supervision as sv
 import inspect
 
-st.write("DEPLOYED KEY:", "ROBOWFLOW_API_KEY" in st.secrets)
-
 st.title("Pinniped Detection from Drone Imagery")
 st.markdown("Upload drone images to detect seals using a YOLOv11 model (via Roboflow).")
 
@@ -29,7 +27,7 @@ if uploaded_files:
     grouped_coords, max_counts = defaultdict(list), defaultdict(int)
     all_detections_records, summary_records = [], []
 
-    st.info(f"📥 Processing {len(uploaded_files)} images sequentially (7 sec/image)...")
+    st.info(f"📥 Processing {len(uploaded_files)} images sequentially...")
     progress_text = st.empty()
     
     annotated_count = 0
@@ -71,13 +69,18 @@ if uploaded_files:
                 continue
             
             gsd = compute_gsd({}, img.shape[1])
-            detections.xyxy *= scale
+
+            # Do NOT modify detections in-place before annotating resized image.
+            # The model returned coordinates relative to the resized image `p2`.
+            # Annotate using those coordinates. For saving/export, compute
+            # scaled coordinates that map back to the original image size.
 
             count = len(detections.xyxy)
             max_counts[group_key] = max(max_counts[group_key], count)
 
-            # Populate grouped_coords for clustering
+            # Populate grouped_coords for clustering using resized-image coordinates
             for box in detections.xyxy:
+                # box is [x_min, y_min, x_max, y_max] in resized image pixels
                 xc = (box[0] + box[2]) / 2
                 yc = (box[1] + box[3]) / 2
                 dx_m = (xc - img.shape[1] / 2) * gsd
@@ -94,16 +97,17 @@ if uploaded_files:
                 else annotator.annotate(scene=img.copy(), detections=detections)
             st.image(cv2.cvtColor(labeled, cv2.COLOR_BGR2RGB), caption=f"✅ {uploaded.name} ({count} seals)")
 
-            # Save detections
-            for seal_idx, (box, conf) in enumerate(zip(detections.xyxy, detections.confidence), start=1):
+            # Save detections: scale coordinates back to original image size
+            scaled_boxes = (detections.xyxy * scale) if hasattr(detections.xyxy, "__mul__") else detections.xyxy
+            for seal_idx, (box, conf) in enumerate(zip(scaled_boxes, detections.confidence), start=1):
                 all_detections_records.append({
                     "image_name": uploaded.name,
                     "seal_id": seal_idx,
-                    "x_min": box[0],
-                    "y_min": box[1],
-                    "x_max": box[2],
-                    "y_max": box[3],
-                    "confidence": conf
+                    "x_min": float(box[0]),
+                    "y_min": float(box[1]),
+                    "x_max": float(box[2]),
+                    "y_max": float(box[3]),
+                    "confidence": float(conf)
                 })
 
             summary_records.append({
