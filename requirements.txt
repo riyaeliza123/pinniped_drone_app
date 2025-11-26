@@ -5,6 +5,7 @@ opencv-python-headless
 pillow>=11.1,<12  # compatible with streamlit & pi_heif
 pi_heif
 pillow-avif-plugin
+supervision
 
 # ML / numeric
 numpy
