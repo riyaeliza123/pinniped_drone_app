@@ -7,7 +7,7 @@ pi_heif
 pillow-avif-plugin
 supervision
 exifread
-pyproj
+pyproj>=3.7.1
 
 # ML / numeric
 numpy
