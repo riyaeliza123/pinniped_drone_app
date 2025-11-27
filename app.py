@@ -11,7 +11,7 @@ from scripts.summaries import display_and_download_summary
 import supervision as sv
 import inspect
 from uuid import uuid4
-import time
+import time as time_module
 import traceback
 import sys
 
@@ -74,7 +74,7 @@ if uploaded_files:
         if batch_pos == 0 and i > 1:
             # Show batch transition message
             progress_text.markdown(f"**Batch {batch_num} complete. Waiting {BATCH_DELAY_SECONDS}s before batch {batch_num + 1}...**")
-            time.sleep(BATCH_DELAY_SECONDS)
+            time_module.sleep(BATCH_DELAY_SECONDS)
 
         uploaded_name = getattr(uploaded, 'name', f'image_{i}')
         unique_name = f"{uuid4().hex}_{uploaded_name}"
@@ -226,7 +226,7 @@ if uploaded_files:
 
             # If we used the demo fallback, wait the Roboflow min interval to avoid bursts
             if used_demo and _rf_min_interval > 0:
-                time.sleep(_rf_min_interval)
+                time_module.sleep(_rf_min_interval)
 
         except Exception:
             # internal error: log to stderr but don't expose details to UI
