@@ -64,6 +64,20 @@ if uploaded_files:
     if 'out_dir' not in st.session_state:
         st.session_state['out_dir'] = tempfile.mkdtemp()
     out_dir = st.session_state['out_dir']
+    # prepare an error log file inside out_dir for deployed-run diagnostics
+    error_log_path = os.path.join(out_dir, 'error_log.txt')
+    st.session_state['error_log_path'] = error_log_path
+
+    def _log_error(message: str):
+        try:
+            with open(error_log_path, 'a') as ef:
+                ef.write(f"---\n{message}\n")
+                ef.write(traceback.format_exc())
+                ef.write("\n")
+        except Exception:
+            # best-effort: if logging fails, fallback to stderr
+            print(message, file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
 
     # Reset per-run storage for annotated images and records
     st.session_state['annotated_paths'] = []
@@ -170,8 +184,7 @@ if uploaded_files:
                     pass
                 upload_progress_label.text(f"{staged_count}/{total_selected} uploaded")
             except Exception:
-                print(f"[Error staging {uploaded_name}]", file=sys.stderr)
-                traceback.print_exc(file=sys.stderr)
+                _log_error(f"[Error staging {uploaded_name}]")
                 continue
 
         # Process each staged item in the batch sequentially
@@ -220,8 +233,7 @@ if uploaded_files:
                 try:
                     detections = run_detection(candidate_path, conf_threshold, overlap_threshold)
                 except Exception:
-                    print(f"[Detection fallback for {uploaded_name}]", file=sys.stderr)
-                    traceback.print_exc(file=sys.stderr)
+                    _log_error(f"[Detection fallback for {uploaded_name}]")
                     detections = demo_detection(candidate_path, conf_threshold, overlap_threshold)
                     used_demo = True
 
@@ -305,8 +317,7 @@ if uploaded_files:
                     time_module.sleep(_rf_min_interval)
 
             except Exception:
-                print(f"[Error processing {uploaded_name}]", file=sys.stderr)
-                traceback.print_exc(file=sys.stderr)
+                _log_error(f"[Error processing {uploaded_name}]")
                 for p in (locals().get('candidate_path', None), locals().get('p2', None), locals().get('p1', None), tmp_path):
                     try:
                         if p and os.path.exists(p):
