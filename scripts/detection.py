@@ -1,4 +1,8 @@
 # Run Roboflow model inference and convert JSON to Supervision format
+import os
+import time
+import random
+import threading
 import numpy as np
 import supervision as sv
 from scripts.config import model
@@ -55,13 +59,57 @@ def parse_roboflow_detections(result_json):
     return sv.Detections(xyxy=np.array(xyxy), confidence=np.array(conf), class_id=np.array(cid))
 
 def run_detection(image_path, confidence, overlap):
-    result = model.predict(image_path, confidence=confidence, overlap=overlap).json()
+    # default direct Roboflow call (wrapped by _roboflow_predict_with_retries below)
+    result = _roboflow_predict_with_retries(image_path, confidence, overlap)
     return parse_roboflow_detections(result)
 
 def run_batch_detection(image_paths, confidence, overlap):
-    """Process a batch of images and return detection results."""
+    """Process a batch of images and return detection results (rate-limited).
+
+    This uses the same rate-limit and retry logic as `run_detection`.
+    """
     results = []
     for path in image_paths:
-        result = model.predict(path, confidence=confidence, overlap=overlap).json()
-        results.append(parse_roboflow_detections(result))
+        det = run_detection(path, confidence, overlap)
+        results.append(det)
     return results
+
+
+# --- Rate limiting and retry/backoff logic ---
+# Config via environment variables with sensible defaults
+RATE_LIMIT_PER_MINUTE = int(os.getenv("ROBOFLOW_RATE_LIMIT_PER_MINUTE", "60"))
+MAX_RETRIES = int(os.getenv("ROBOFLOW_MAX_RETRIES", "5"))
+BACKOFF_BASE = float(os.getenv("ROBOFLOW_BACKOFF_BASE", "1.0"))
+
+# Internal rate-limiting state
+_last_call_time = 0.0
+_rate_lock = threading.Lock()
+
+
+def _wait_for_rate_limit():
+    if RATE_LIMIT_PER_MINUTE <= 0:
+        return
+    min_interval = 60.0 / float(RATE_LIMIT_PER_MINUTE)
+    global _last_call_time
+    with _rate_lock:
+        now = time.time()
+        elapsed = now - _last_call_time
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
+        _last_call_time = time.time()
+
+
+def _roboflow_predict_with_retries(image_path, confidence, overlap):
+    attempt = 0
+    while True:
+        try:
+            _wait_for_rate_limit()
+            result = model.predict(image_path, confidence=confidence, overlap=overlap).json()
+            return result
+        except Exception:
+            attempt += 1
+            if attempt > MAX_RETRIES:
+                raise
+            backoff = BACKOFF_BASE * (2 ** (attempt - 1))
+            jitter = random.uniform(0, backoff * 0.1)
+            time.sleep(backoff + jitter)
