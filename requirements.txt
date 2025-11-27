@@ -8,6 +8,7 @@ pillow-avif-plugin
 supervision
 exifread
 pyproj>=3.7.1
+inference-sdk
 
 # ML / numeric
 numpy
