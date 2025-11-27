@@ -1,5 +1,15 @@
+import os
+os.environ['STREAMLIT_SERVER_FILE_WATCHER_TYPE'] = 'none'
+
 import streamlit as st
-import tempfile, os, cv2, gc
+import cv2
+import tempfile
+import gc
+import sys
+import traceback
+import shutil
+import supervision as sv
+import inspect
 from collections import defaultdict
 from math import cos, radians
 
@@ -8,49 +18,17 @@ from scripts.exif_utils import extract_gps_from_image, get_capture_date_time, ge
 from scripts.image_utils import limit_resolution_to_temp, progressive_resize_to_temp, compute_gsd
 from scripts.clustering import compute_unique_counts
 from scripts.summaries import display_and_download_summary
-import supervision as sv
-import inspect
 from uuid import uuid4
-import time as time_module
-import traceback
-import sys
 
 st.title("Pinniped Detection from Drone Imagery")
-
-# If a deployed error log exists, show its tail and offer a download (helps Streamlit Cloud debugging)
-try:
-    deployed_log = os.path.join(os.getcwd(), 'deployed_error_log.txt')
-    if os.path.exists(deployed_log):
-        try:
-            with open(deployed_log, 'r', encoding='utf-8', errors='replace') as f:
-                lines = f.readlines()
-            tail = ''.join(lines[-400:]) if len(lines) > 400 else ''.join(lines)
-            st.warning('Detected a deployment error log — showing last lines below.')
-            st.code(tail)
-            try:
-                st.download_button('Download deployed_error_log.txt', data=''.join(lines), file_name='deployed_error_log.txt')
-            except Exception:
-                pass
-        except Exception:
-            pass
-except Exception:
-    pass
 
 st.markdown("### ⚙️ Detection Thresholds")
 conf_threshold = st.slider("Confidence threshold (%)", 0, 100, 15, step=5)
 overlap_threshold = st.slider("Overlap threshold (%)", 0, 100, 30, step=5)
 
 st.markdown("Upload drone images to detect seals using a YOLOv11 model (via Roboflow).")
-try:
-    ui_batch_size = st.sidebar.slider("Batch size (smaller if deployment has limited RAM)", 1, 10, 5)
-except Exception:
-    ui_batch_size = 5
 
 uploaded_files = st.file_uploader("Upload Drone Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
-
-# Keep a processing flag in session state; buttons are shown only after upload
-if 'processing_started' not in st.session_state:
-    st.session_state['processing_started'] = False
 
 # Internal rate-limit interval (used when falling back to demo to avoid bursts)
 _rf_rate_per_min = int(os.getenv('ROBOFLOW_RATE_LIMIT_PER_MINUTE', '60'))
@@ -61,91 +39,11 @@ upload_progress_bar_placeholder = st.empty()
 upload_progress_label = st.empty()
 
 if uploaded_files:
-    import shutil
-
-    # If the user hasn't explicitly started processing, show info and stop to avoid memory spikes
-    if not st.session_state.get('processing_started', False):
-        st.info(f"{len(uploaded_files)} files uploaded. Click **Start processing uploaded images (batch mode)** to begin processing in batches.")
-        # show filenames for quick confirmation
-        try:
-            for uf in uploaded_files[:20]:
-                st.write(getattr(uf, 'name', 'unnamed'))
-        except Exception:
-            pass
-
-        # Show Start and Reset buttons below the uploaded message
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            if st.button("Start processing uploaded images (batch mode)"):
-                st.session_state['processing_started'] = True
-                st.experimental_rerun()
-        with col2:
-            if st.button("Reset / Clear session"):
-                for k in ('annotated_paths', 'all_detections_records', 'summary_records', 'grouped_coords', 'max_counts', 'out_dir'):
-                    try:
-                        del st.session_state[k]
-                    except Exception:
-                        pass
-                st.experimental_rerun()
-
-        st.stop()
-
+    
     # Create a per-run temp directory in session state to keep writes isolated
     if 'out_dir' not in st.session_state:
         st.session_state['out_dir'] = tempfile.mkdtemp()
     out_dir = st.session_state['out_dir']
-    # prepare an error log file inside out_dir for deployed-run diagnostics
-    error_log_path = os.path.join(out_dir, 'error_log.txt')
-    st.session_state['error_log_path'] = error_log_path
-    # also write a duplicate deployed log to the repository root for easy access
-    deployed_log_path = os.path.join(os.getcwd(), 'deployed_error_log.txt')
-
-    def _log_error(message: str):
-        try:
-            # write to per-run and repo-root logs
-            with open(error_log_path, 'a') as ef:
-                ef.write(f"---\n{message}\n")
-                ef.write(traceback.format_exc())
-                ef.write("\n")
-            try:
-                with open(deployed_log_path, 'a') as df:
-                    df.write(f"---\n{message}\n")
-                    df.write(traceback.format_exc())
-                    df.write("\n")
-            except Exception:
-                pass
-
-            # Best-effort: try to upload the error log to an anonymous paste service
-            try:
-                import requests
-                with open(error_log_path, 'rb') as fh:
-                    files = {'file': ('error_log.txt', fh)}
-                    # using 0x0.st which accepts multipart POST
-                    resp = requests.post('https://0x0.st', files=files, timeout=10)
-                    if resp.status_code == 200:
-                        url = resp.text.strip()
-                        # record URL to deployed log and stdout so platform logs capture it
-                        try:
-                            with open(deployed_log_path, 'a') as df:
-                                df.write(f"Uploaded error log URL: {url}\n")
-                        except Exception:
-                            pass
-                        print(f"[Uploaded error log] {url}", file=sys.stderr)
-            except Exception:
-                # ignore network/upload errors
-                pass
-
-        except Exception:
-            # best-effort: if logging fails, fallback to stderr
-            print(message, file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
-
-    def _free_space_mb(path: str) -> int:
-        try:
-            du = shutil.disk_usage(path)
-            return int(du.free / (1024 * 1024))
-        except Exception:
-            return 0
 
     # Reset per-run storage for annotated images and records
     st.session_state['annotated_paths'] = []
@@ -166,12 +64,8 @@ if uploaded_files:
     upload_progress_label.text(f"{staged_count}/{total_selected} uploaded")
     progress_text = st.empty()
 
-    # Batch configuration: inter-batch delay and batch size (UI-configurable)
-    BATCH_DELAY_SECONDS = 60
-    try:
-        BATCH_SIZE = int(ui_batch_size)
-    except Exception:
-        BATCH_SIZE = 5
+    # Batch configuration: process one image at a time
+    BATCH_SIZE = 1
     for batch_start in range(0, total_selected, BATCH_SIZE):
         batch_end = min(batch_start + BATCH_SIZE, total_selected)
         batch = uploaded_files[batch_start:batch_end]
@@ -200,25 +94,13 @@ if uploaded_files:
                 try:
                     img_tmp = cv2.imread(tmp_path)
                     if img_tmp is not None:
-                        h0, w0 = img_tmp.shape[:2]
-                        scale_pct = 0.6
-                        new_w = max(1, int(w0 * scale_pct))
-                        new_h = max(1, int(h0 * scale_pct))
-                        resized = cv2.resize(img_tmp, (new_w, new_h), interpolation=cv2.INTER_AREA)
-                        fd, reduced_path = tempfile.mkstemp(suffix='.jpg')
-                        os.close(fd)
-                        cv2.imwrite(reduced_path, resized, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                        try:
-                            os.remove(tmp_path)
-                        except Exception:
-                            pass
-                        tmp_path = reduced_path
+                        h, w = img_tmp.shape[:2]
                     try:
                         del img_tmp
                     except Exception:
                         pass
                     try:
-                        del resized
+                        gc.collect()
                     except Exception:
                         pass
                 except Exception:
@@ -252,19 +134,10 @@ if uploaded_files:
                     pass
                 upload_progress_label.text(f"{staged_count}/{total_selected} uploaded")
             except Exception:
-                _log_error(f"[Error staging {uploaded_name}]")
+                st.error(f"Error staging {uploaded_name}")
                 continue
 
         # Process each staged item in the batch sequentially
-        # Check free disk space before processing the batch
-        try:
-            free_mb = _free_space_mb(out_dir)
-            if free_mb and free_mb < 200:
-                _log_error(f"Low disk space before processing batch starting at {batch_start}: {free_mb} MB free")
-                st.error(f"Insufficient disk space on server ({free_mb} MB free). Aborting processing to avoid crash.")
-                break
-        except Exception:
-            pass
         for item in batch_items:
             tmp_path = item['tmp_path']
             uploaded_name = item['uploaded_name']
@@ -274,7 +147,7 @@ if uploaded_files:
             captured_time = item.get('captured_time')
 
             try:
-                progress_text.markdown(f"**Processing: {staged_count}/{total_selected} (batch {batch_start//BATCH_SIZE + 1})**")
+                progress_text.markdown(f"**Processing: {staged_count}/{total_selected}**")
 
                 # Preprocess: resize (these functions may create temp files p1/p2)
                 p1, s1 = limit_resolution_to_temp(tmp_path)
@@ -310,7 +183,6 @@ if uploaded_files:
                 try:
                     detections = run_detection(candidate_path, conf_threshold, overlap_threshold)
                 except Exception:
-                    _log_error(f"[Detection fallback for {uploaded_name}]")
                     detections = demo_detection(candidate_path, conf_threshold, overlap_threshold)
                     used_demo = True
 
@@ -356,7 +228,7 @@ if uploaded_files:
                     dy_m = (yc - img.shape[0] / 2) * gsd
                     lat_off = dy_m / 111320
                     lon_off = dx_m / (111320 * cos(radians(lat)))
-                    st.session_state['grouped_coords'][group_key].append(((lat + lat_off, lon + lon_off), gsd, time))
+                    st.session_state['grouped_coords'][group_key].append((lat + lat_off, lon + lon_off))
 
                 st.session_state['summary_records'].append({
                     "image_name": uploaded_name,
@@ -377,7 +249,7 @@ if uploaded_files:
                         pass
 
                 try:
-                    del img
+                    del img, labeled
                 except Exception:
                     pass
                 gc.collect()
@@ -385,16 +257,18 @@ if uploaded_files:
                 # mark processed and update UI
                 processed_count += 1
                 try:
-                    upload_progress_label.text(f"{staged_count}/{total_selected} staged — {processed_count} processed")
+                    pct = int((processed_count / total_selected) * 100)
+                    upload_progress_bar_placeholder.progress(pct)
                 except Exception:
                     pass
 
                 # If we used demo fallback, wait small interval to avoid bursts
                 if used_demo and _rf_min_interval > 0:
-                    time_module.sleep(_rf_min_interval)
+                    import time
+                    time.sleep(_rf_min_interval)
 
             except Exception:
-                _log_error(f"[Error processing {uploaded_name}]")
+                st.error(f"Error processing {uploaded_name}")
                 for p in (locals().get('candidate_path', None), locals().get('p2', None), locals().get('p1', None), tmp_path):
                     try:
                         if p and os.path.exists(p):
