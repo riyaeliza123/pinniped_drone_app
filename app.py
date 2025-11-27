@@ -3,7 +3,7 @@ import tempfile, os, cv2, gc
 from collections import defaultdict
 from math import cos, radians
 
-from scripts.detection import run_detection
+from scripts.detection import run_detection, demo_detection
 from scripts.exif_utils import extract_gps_from_image, get_capture_date_time, get_location_name
 from scripts.image_utils import limit_resolution_to_temp, progressive_resize_to_temp, compute_gsd
 from scripts.clustering import compute_unique_counts
@@ -21,6 +21,9 @@ st.markdown("### ⚙️ Detection Thresholds")
 
 conf_threshold = st.slider("Confidence threshold (%)", 0, 100, 15, step=5)
 overlap_threshold = st.slider("Overlap threshold (%)", 0, 100, 30, step=5)
+
+# Demo mode: use a local deterministic stub detector instead of Roboflow
+demo_mode = st.checkbox("Demo mode (no Roboflow) — use local stub (remove before production)", value=False)
 
 # Small upload progress UI (shows staged files written to disk)
 upload_progress_bar_placeholder = st.empty()
@@ -116,7 +119,10 @@ if uploaded_files:
             group_key = (location, date)
 
             # Run detection on chosen image (one image per Roboflow call)
-            detections = run_detection(candidate_path, conf_threshold, overlap_threshold)
+            if demo_mode:
+                detections = demo_detection(candidate_path, conf_threshold, overlap_threshold)
+            else:
+                detections = run_detection(candidate_path, conf_threshold, overlap_threshold)
 
             # Load chosen image for annotation
             img = cv2.imread(candidate_path)
