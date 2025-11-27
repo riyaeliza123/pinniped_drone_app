@@ -16,6 +16,10 @@ st.title("Pinniped Detection from Drone Imagery")
 st.markdown("Upload drone images to detect seals using a YOLOv11 model (via Roboflow).")
 
 uploaded_files = st.file_uploader("Upload Drone Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+# Small upload progress UI (shows staged files written to disk)
+upload_progress_bar_placeholder = st.empty()
+upload_progress_label = st.empty()
+
 st.markdown("### ⚙️ Detection Thresholds")
 
 conf_threshold = st.slider("Confidence threshold (%)", 0, 100, 15, step=5)
@@ -24,77 +28,82 @@ overlap_threshold = st.slider("Overlap threshold (%)", 0, 100, 30, step=5)
 if uploaded_files:
     import shutil
 
-    # Create a per-run temp directory and a staged list in session state to
-    # avoid holding all UploadedFile objects in memory during processing.
+    # Create a per-run temp directory in session state to keep writes isolated
     if 'out_dir' not in st.session_state:
         st.session_state['out_dir'] = tempfile.mkdtemp()
     out_dir = st.session_state['out_dir']
 
-    if 'staged_paths' not in st.session_state:
-        st.session_state['staged_paths'] = []
-    if 'next_index' not in st.session_state:
-        st.session_state['next_index'] = 0
-
-    # Stage uploaded files to disk immediately, then release UploadedFile refs
-    for i, uploaded in enumerate(uploaded_files):
-        try:
-            unique_name = f"{uuid4().hex}_{uploaded.name}"
-            tmp_path = os.path.join(out_dir, unique_name)
-            with open(tmp_path, 'wb') as f:
-                f.write(uploaded.read())
-            st.session_state['staged_paths'].append(tmp_path)
-        except Exception as e:
-            st.error(f"Failed to save {getattr(uploaded, 'name', str(i))}: {e}")
-        finally:
-            # Release the UploadedFile object reference to free memory
-            try:
-                uploaded.file.close()
-            except Exception:
-                pass
-            uploaded = None
-
-    # Free references to uploaded_files list itself so Streamlit can GC
-    try:
-        del uploaded_files
-    except Exception:
-        pass
-
-    # Now process staged files sequentially (one at a time)
+    # Prepare aggregated records for final summary
     grouped_coords, max_counts = defaultdict(list), defaultdict(int)
     all_detections_records, summary_records = [], []
 
-    total = len(st.session_state['staged_paths'])
+    total_selected = len(uploaded_files)
+    staged_count = 0
+
+    # initialize progress UI
+    try:
+        upload_progress_bar_placeholder.progress(0)
+    except Exception:
+        pass
+    upload_progress_label.text(f"{staged_count}/{total_selected} uploaded")
     progress_text = st.empty()
 
-    for idx in range(st.session_state['next_index'], total):
-        image_path = st.session_state['staged_paths'][idx]
-        uploaded_name = os.path.basename(image_path)
-        progress_text.markdown(f"**Progress: {idx}/{total} annotated**")
+    # Process each uploaded file immediately: write -> run -> cleanup
+    for i, uploaded in enumerate(uploaded_files, start=1):
+        uploaded_name = getattr(uploaded, 'name', f'image_{i}')
+        unique_name = f"{uuid4().hex}_{uploaded_name}"
+        tmp_path = os.path.join(out_dir, unique_name)
 
         try:
-            # Preprocess: resize (these functions return temp paths)
-            p1, s1 = limit_resolution_to_temp(image_path)
+            # write file to disk
+            with open(tmp_path, 'wb') as f:
+                f.write(uploaded.read())
+
+            # update upload progress UI
+            staged_count += 1
+            try:
+                pct = int((staged_count / total_selected) * 100)
+            except Exception:
+                pct = 0
+            try:
+                upload_progress_bar_placeholder.progress(pct)
+            except Exception:
+                pass
+            upload_progress_label.text(f"{staged_count}/{total_selected} uploaded")
+
+            # Show processing progress
+            progress_text.markdown(f"**Processing: {staged_count}/{total_selected}**")
+
+            # Preprocess: resize (these functions may create temp files p1/p2)
+            p1, s1 = limit_resolution_to_temp(tmp_path)
             p2, s2 = progressive_resize_to_temp(p1)
             scale = s1 * s2
 
             # Extract metadata from the original file
-            lat, lon = extract_gps_from_image(image_path)
-            date, time = get_capture_date_time(image_path)
+            lat, lon = extract_gps_from_image(tmp_path)
+            date, time = get_capture_date_time(tmp_path)
             location = get_location_name(lat)
 
             if lat is None or lon is None:
                 st.warning(f"⚠️ No GPS data in {uploaded_name}. Skipping.")
-                st.session_state['next_index'] += 1
-                # remove original file to free disk
+                # cleanup temp files
+                for p in (p2, p1, tmp_path):
+                    try:
+                        if p and os.path.exists(p):
+                            os.remove(p)
+                    except Exception:
+                        pass
                 try:
-                    os.remove(image_path)
+                    uploaded.file.close()
                 except Exception:
                     pass
+                uploaded = None
+                gc.collect()
                 continue
 
             group_key = (location, date)
 
-            # Run detection on resized image
+            # Run detection on resized image (one image per Roboflow call)
             detections = run_detection(p2, conf_threshold, overlap_threshold)
 
             # Load resized image for annotation
@@ -146,29 +155,39 @@ if uploaded_files:
                 "time": time
             })
 
-            # Done with this image: increment index and remove original file to free disk
-            st.session_state['next_index'] += 1
-            try:
-                os.remove(image_path)
-            except Exception:
-                pass
+            # cleanup temp files created during processing
+            for p in (p2, p1, tmp_path):
+                try:
+                    if p and os.path.exists(p):
+                        os.remove(p)
+                except Exception:
+                    pass
 
             # Free memory
-            del img
+            try:
+                del img
+            except Exception:
+                pass
             gc.collect()
 
         except Exception as e:
             st.error(f"❌ Error processing {uploaded_name}: {e}")
-            # ensure we still advance to next image to avoid stuck loops
-            st.session_state['next_index'] += 1
+            # ensure cleanup on error
+            for p in (p2 if 'p2' in locals() else None, p1 if 'p1' in locals() else None, tmp_path):
+                try:
+                    if p and os.path.exists(p):
+                        os.remove(p)
+                except Exception:
+                    pass
             try:
-                os.remove(image_path)
+                uploaded.file.close()
             except Exception:
                 pass
+            uploaded = None
             gc.collect()
             continue
 
-    # Final summary and cleanup
-    progress_text.markdown(f"**✅ Complete! {st.session_state.get('next_index', 0)}/{total} annotated**")
+    # Final summary and cleanup after all uploaded files processed
+    progress_text.markdown(f"**✅ Complete! {staged_count}/{total_selected} processed**")
     folder_summary_records = compute_unique_counts(grouped_coords, max_counts)
     display_and_download_summary(summary_records, folder_summary_records, all_detections_records)
