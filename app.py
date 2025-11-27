@@ -16,8 +16,12 @@ import traceback
 import sys
 
 st.title("Pinniped Detection from Drone Imagery")
-st.markdown("Upload drone images to detect seals using a YOLOv11 model (via Roboflow).")
 
+st.markdown("### ⚙️ Detection Thresholds")
+conf_threshold = st.slider("Confidence threshold (%)", 0, 100, 15, step=5)
+overlap_threshold = st.slider("Overlap threshold (%)", 0, 100, 30, step=5)
+
+st.markdown("Upload drone images to detect seals using a YOLOv11 model (via Roboflow).")
 uploaded_files = st.file_uploader("Upload Drone Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
 # Add explicit start control to avoid auto-processing very large, all-at-once uploads
@@ -33,10 +37,6 @@ if st.button("Reset / Clear session"):
         except Exception:
             pass
     st.experimental_rerun()
-
-st.markdown("### ⚙️ Detection Thresholds")
-conf_threshold = st.slider("Confidence threshold (%)", 0, 100, 15, step=5)
-overlap_threshold = st.slider("Overlap threshold (%)", 0, 100, 30, step=5)
 
 # Internal rate-limit interval (used when falling back to demo to avoid bursts)
 _rf_rate_per_min = int(os.getenv('ROBOFLOW_RATE_LIMIT_PER_MINUTE', '60'))
