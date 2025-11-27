@@ -78,7 +78,15 @@ if uploaded_files:
             # Preprocess: resize (these functions may create temp files p1/p2)
             p1, s1 = limit_resolution_to_temp(tmp_path)
             p2, s2 = progressive_resize_to_temp(p1)
-            scale = s1 * s2
+            # choose best candidate for detection: prefer p2, then p1, then original
+            candidate_path = p2 or p1 or tmp_path
+            # compute effective scale: if p2 exists use s1*s2, elif p1 use s1, else 1.0
+            if p2:
+                scale = s1 * s2
+            elif p1:
+                scale = s1
+            else:
+                scale = 1.0
 
             # Extract metadata from the original file
             lat, lon = extract_gps_from_image(tmp_path)
@@ -104,11 +112,11 @@ if uploaded_files:
 
             group_key = (location, date)
 
-            # Run detection on resized image (one image per Roboflow call)
-            detections = run_detection(p2, conf_threshold, overlap_threshold)
+            # Run detection on chosen image (one image per Roboflow call)
+            detections = run_detection(candidate_path, conf_threshold, overlap_threshold)
 
-            # Load resized image for annotation
-            img = cv2.imread(p2)
+            # Load chosen image for annotation
+            img = cv2.imread(candidate_path)
             if img is None:
                 st.warning(f"❌ Could not read resized image {uploaded_name}")
                 raise RuntimeError("Failed to read resized image")
@@ -156,7 +164,7 @@ if uploaded_files:
                 "time": time
             })
 
-            # cleanup temp files created during processing
+            # cleanup temp files created during processing (only if present)
             for p in (p2, p1, tmp_path):
                 try:
                     if p and os.path.exists(p):
@@ -172,9 +180,15 @@ if uploaded_files:
             gc.collect()
 
         except Exception as e:
-            st.error(f"❌ Error processing {uploaded_name}: {e}")
+            # show full exception in UI and log to terminal for diagnostics
+            try:
+                st.exception(e)
+            except Exception:
+                st.error(f"❌ Error processing {uploaded_name}: {e}")
+            import traceback, sys
+            traceback.print_exc(file=sys.stderr)
             # ensure cleanup on error
-            for p in (p2 if 'p2' in locals() else None, p1 if 'p1' in locals() else None, tmp_path):
+            for p in (locals().get('candidate_path', None), locals().get('p2', None), locals().get('p1', None), tmp_path):
                 try:
                     if p and os.path.exists(p):
                         os.remove(p)
