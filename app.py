@@ -16,14 +16,15 @@ st.title("Pinniped Detection from Drone Imagery")
 st.markdown("Upload drone images to detect seals using a YOLOv11 model (via Roboflow).")
 
 uploaded_files = st.file_uploader("Upload Drone Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
-# Small upload progress UI (shows staged files written to disk)
-upload_progress_bar_placeholder = st.empty()
-upload_progress_label = st.empty()
 
 st.markdown("### ⚙️ Detection Thresholds")
 
 conf_threshold = st.slider("Confidence threshold (%)", 0, 100, 15, step=5)
 overlap_threshold = st.slider("Overlap threshold (%)", 0, 100, 30, step=5)
+
+# Small upload progress UI (shows staged files written to disk)
+upload_progress_bar_placeholder = st.empty()
+upload_progress_label = st.empty()
 
 if uploaded_files:
     import shutil
