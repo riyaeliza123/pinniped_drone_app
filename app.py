@@ -34,9 +34,12 @@ if uploaded_files:
         st.session_state['out_dir'] = tempfile.mkdtemp()
     out_dir = st.session_state['out_dir']
 
-    # Prepare aggregated records for final summary
-    grouped_coords, max_counts = defaultdict(list), defaultdict(int)
-    all_detections_records, summary_records = [], []
+    # Reset per-run storage for annotated images and records
+    st.session_state['annotated_paths'] = []
+    st.session_state['all_detections_records'] = []
+    st.session_state['summary_records'] = []
+    st.session_state['grouped_coords'] = defaultdict(list)
+    st.session_state['max_counts'] = defaultdict(int)
 
     total_selected = len(uploaded_files)
     staged_count = 0
@@ -49,7 +52,7 @@ if uploaded_files:
     upload_progress_label.text(f"{staged_count}/{total_selected} uploaded")
     progress_text = st.empty()
 
-    # Process each uploaded file immediately: write -> run -> cleanup
+    # Process each uploaded file immediately: write -> run -> cleanup -> save annotated
     for i, uploaded in enumerate(uploaded_files, start=1):
         uploaded_name = getattr(uploaded, 'name', f'image_{i}')
         unique_name = f"{uuid4().hex}_{uploaded_name}"
@@ -123,18 +126,30 @@ if uploaded_files:
 
             gsd = compute_gsd({}, img.shape[1])
 
-            # Annotate using detections (coordinates are relative to p2)
+            # Annotate using detections (coordinates are relative to candidate_path)
             annotator = sv.BoxAnnotator()
             texts = [f"seal {conf*100:.1f}%" for conf in detections.confidence]
             labeled = annotator.annotate(scene=img.copy(), detections=detections, labels=texts) \
                 if "labels" in inspect.signature(annotator.annotate).parameters \
                 else annotator.annotate(scene=img.copy(), detections=detections)
-            st.image(cv2.cvtColor(labeled, cv2.COLOR_BGR2RGB), caption=f"✅ {uploaded_name} ({len(detections.xyxy)} seals)")
+
+            # Save annotated image to a temp file for later aggregated display
+            ann_tmp = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
+            ann_path = ann_tmp.name
+            ann_tmp.close()
+            cv2.imwrite(ann_path, labeled)
+            st.session_state['annotated_paths'].append(ann_path)
+
+            # print processing log for this image
+            try:
+                st.write(f"Processed {staged_count}/{total_selected}: {uploaded_name} — {len(detections.xyxy)} seals")
+            except Exception:
+                pass
 
             # Save detections scaled back to original image size
             scaled_boxes = (detections.xyxy * scale) if hasattr(detections.xyxy, "__mul__") else detections.xyxy
             for seal_idx, (box, conf) in enumerate(zip(scaled_boxes, detections.confidence), start=1):
-                all_detections_records.append({
+                st.session_state['all_detections_records'].append({
                     "image_name": uploaded_name,
                     "seal_id": seal_idx,
                     "x_min": float(box[0]),
@@ -152,9 +167,9 @@ if uploaded_files:
                 dy_m = (yc - img.shape[0] / 2) * gsd
                 lat_off = dy_m / 111320
                 lon_off = dx_m / (111320 * cos(radians(lat)))
-                grouped_coords[group_key].append(((lat + lat_off, lon + lon_off), gsd, time))
+                st.session_state['grouped_coords'][group_key].append(((lat + lat_off, lon + lon_off), gsd, time))
 
-            summary_records.append({
+            st.session_state['summary_records'].append({
                 "image_name": uploaded_name,
                 "pinniped_count": len(detections.xyxy),
                 "latitude": lat,
@@ -202,7 +217,20 @@ if uploaded_files:
             gc.collect()
             continue
 
-    # Final summary and cleanup after all uploaded files processed
+    # Final summary and aggregated display after all uploaded files processed
     progress_text.markdown(f"**✅ Complete! {staged_count}/{total_selected} processed**")
-    folder_summary_records = compute_unique_counts(grouped_coords, max_counts)
-    display_and_download_summary(summary_records, folder_summary_records, all_detections_records)
+
+    # Show all annotated images one after another
+    st.markdown("### Annotated Images")
+    for ap in st.session_state.get('annotated_paths', []):
+        try:
+            st.image(cv2.cvtColor(cv2.imread(ap), cv2.COLOR_BGR2RGB))
+        except Exception:
+            try:
+                st.image(ap)
+            except Exception:
+                pass
+
+    # Compute folder-level unique counts and show CSV downloads
+    folder_summary_records = compute_unique_counts(st.session_state['grouped_coords'], st.session_state['max_counts'])
+    display_and_download_summary(st.session_state['summary_records'], folder_summary_records, st.session_state['all_detections_records'])
