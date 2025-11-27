@@ -24,19 +24,9 @@ overlap_threshold = st.slider("Overlap threshold (%)", 0, 100, 30, step=5)
 st.markdown("Upload drone images to detect seals using a YOLOv11 model (via Roboflow).")
 uploaded_files = st.file_uploader("Upload Drone Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
-# Add explicit start control to avoid auto-processing very large, all-at-once uploads
+# Keep a processing flag in session state; buttons are shown only after upload
 if 'processing_started' not in st.session_state:
     st.session_state['processing_started'] = False
-if st.button("Start processing uploaded images (batch mode)"):
-    st.session_state['processing_started'] = True
-if st.button("Reset / Clear session"):
-    # quick reset helper - remove session keys and rerun
-    for k in ('annotated_paths', 'all_detections_records', 'summary_records', 'grouped_coords', 'max_counts', 'out_dir'):
-        try:
-            del st.session_state[k]
-        except Exception:
-            pass
-    st.experimental_rerun()
 
 # Internal rate-limit interval (used when falling back to demo to avoid bursts)
 _rf_rate_per_min = int(os.getenv('ROBOFLOW_RATE_LIMIT_PER_MINUTE', '60'))
@@ -58,6 +48,22 @@ if uploaded_files:
                 st.write(getattr(uf, 'name', 'unnamed'))
         except Exception:
             pass
+
+        # Show Start and Reset buttons below the uploaded message
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.button("Start processing uploaded images (batch mode)"):
+                st.session_state['processing_started'] = True
+                st.experimental_rerun()
+        with col2:
+            if st.button("Reset / Clear session"):
+                for k in ('annotated_paths', 'all_detections_records', 'summary_records', 'grouped_coords', 'max_counts', 'out_dir'):
+                    try:
+                        del st.session_state[k]
+                    except Exception:
+                        pass
+                st.experimental_rerun()
+
         st.stop()
 
     # Create a per-run temp directory in session state to keep writes isolated
