@@ -9,6 +9,7 @@ supervision
 exifread
 pyproj>=3.7.1
 inference-sdk
+psutil
 
 # ML / numeric
 numpy
