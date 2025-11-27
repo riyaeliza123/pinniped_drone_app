@@ -21,7 +21,6 @@ st.markdown("Upload drone images to detect seals using a YOLOv11 model (via Robo
 uploaded_files = st.file_uploader("Upload Drone Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
 st.markdown("### ⚙️ Detection Thresholds")
-
 conf_threshold = st.slider("Confidence threshold (%)", 0, 100, 15, step=5)
 overlap_threshold = st.slider("Overlap threshold (%)", 0, 100, 30, step=5)
 
@@ -85,6 +84,20 @@ if uploaded_files:
             with open(tmp_path, 'wb') as f:
                 f.write(uploaded.read())
 
+            # Extract EXIF metadata immediately from the original file BEFORE we resize
+            captured_lat = None
+            captured_lon = None
+            captured_date = None
+            captured_time = None
+            try:
+                captured_lat, captured_lon = extract_gps_from_image(tmp_path)
+            except Exception:
+                captured_lat = captured_lon = None
+            try:
+                captured_date, captured_time = get_capture_date_time(tmp_path)
+            except Exception:
+                captured_date = captured_time = None
+
             # Reduce image size by ~40% (scale to ~60%) to lower memory/disk usage
             try:
                 img_tmp = cv2.imread(tmp_path)
@@ -142,9 +155,9 @@ if uploaded_files:
             else:
                 scale = 1.0
 
-            # Extract metadata from the original file
-            lat, lon = extract_gps_from_image(tmp_path)
-            date, time = get_capture_date_time(tmp_path)
+            # Use metadata extracted from the original upload (EXIF is lost by cv2 resize)
+            lat, lon = captured_lat, captured_lon
+            date, time = captured_date, captured_time
             location = get_location_name(lat)
 
             if lat is None or lon is None:
