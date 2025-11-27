@@ -85,6 +85,35 @@ if uploaded_files:
             with open(tmp_path, 'wb') as f:
                 f.write(uploaded.read())
 
+            # Reduce image size by ~40% (scale to ~60%) to lower memory/disk usage
+            try:
+                img_tmp = cv2.imread(tmp_path)
+                if img_tmp is not None:
+                    h0, w0 = img_tmp.shape[:2]
+                    scale_pct = 0.6
+                    new_w = max(1, int(w0 * scale_pct))
+                    new_h = max(1, int(h0 * scale_pct))
+                    resized = cv2.resize(img_tmp, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                    fd, reduced_path = tempfile.mkstemp(suffix='.jpg')
+                    os.close(fd)
+                    cv2.imwrite(reduced_path, resized, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+                    tmp_path = reduced_path
+                try:
+                    del img_tmp
+                except Exception:
+                    pass
+                try:
+                    del resized
+                except Exception:
+                    pass
+            except Exception:
+                # if resize fails, continue with original tmp_path
+                pass
+
             # update upload progress UI
             staged_count += 1
             try:
