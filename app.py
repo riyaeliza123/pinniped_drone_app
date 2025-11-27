@@ -20,6 +20,20 @@ st.markdown("Upload drone images to detect seals using a YOLOv11 model (via Robo
 
 uploaded_files = st.file_uploader("Upload Drone Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
+# Add explicit start control to avoid auto-processing very large, all-at-once uploads
+if 'processing_started' not in st.session_state:
+    st.session_state['processing_started'] = False
+if st.button("Start processing uploaded images (batch mode)"):
+    st.session_state['processing_started'] = True
+if st.button("Reset / Clear session"):
+    # quick reset helper - remove session keys and rerun
+    for k in ('annotated_paths', 'all_detections_records', 'summary_records', 'grouped_coords', 'max_counts', 'out_dir'):
+        try:
+            del st.session_state[k]
+        except Exception:
+            pass
+    st.experimental_rerun()
+
 st.markdown("### ⚙️ Detection Thresholds")
 conf_threshold = st.slider("Confidence threshold (%)", 0, 100, 15, step=5)
 overlap_threshold = st.slider("Overlap threshold (%)", 0, 100, 30, step=5)
@@ -35,6 +49,17 @@ upload_progress_label = st.empty()
 if uploaded_files:
     import shutil
 
+    # If the user hasn't explicitly started processing, show info and stop to avoid memory spikes
+    if not st.session_state.get('processing_started', False):
+        st.info(f"{len(uploaded_files)} files uploaded. Click **Start processing uploaded images (batch mode)** to begin processing in batches.")
+        # show filenames for quick confirmation
+        try:
+            for uf in uploaded_files[:20]:
+                st.write(getattr(uf, 'name', 'unnamed'))
+        except Exception:
+            pass
+        st.stop()
+
     # Create a per-run temp directory in session state to keep writes isolated
     if 'out_dir' not in st.session_state:
         st.session_state['out_dir'] = tempfile.mkdtemp()
@@ -49,6 +74,7 @@ if uploaded_files:
 
     total_selected = len(uploaded_files)
     staged_count = 0
+    processed_count = 0
 
     # initialize progress UI
     try:
@@ -267,6 +293,13 @@ if uploaded_files:
                     pass
                 gc.collect()
 
+                # mark processed and update UI
+                processed_count += 1
+                try:
+                    upload_progress_label.text(f"{staged_count}/{total_selected} staged — {processed_count} processed")
+                except Exception:
+                    pass
+
                 # If we used demo fallback, wait small interval to avoid bursts
                 if used_demo and _rf_min_interval > 0:
                     time_module.sleep(_rf_min_interval)
@@ -284,7 +317,7 @@ if uploaded_files:
                 continue
 
     # Final summary and aggregated display after all uploaded files processed
-    progress_text.markdown(f"**✅ Complete! {staged_count}/{total_selected} processed**")
+    progress_text.markdown(f"**✅ Complete! {processed_count}/{total_selected} processed**")
 
     # Show all annotated images one after another
     st.markdown("### Annotated Images")
