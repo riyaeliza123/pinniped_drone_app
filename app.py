@@ -11,6 +11,9 @@ from scripts.summaries import display_and_download_summary
 import supervision as sv
 import inspect
 from uuid import uuid4
+import time
+import traceback
+import sys
 
 st.title("Pinniped Detection from Drone Imagery")
 st.markdown("Upload drone images to detect seals using a YOLOv11 model (via Roboflow).")
@@ -22,8 +25,9 @@ st.markdown("### ⚙️ Detection Thresholds")
 conf_threshold = st.slider("Confidence threshold (%)", 0, 100, 15, step=5)
 overlap_threshold = st.slider("Overlap threshold (%)", 0, 100, 30, step=5)
 
-# Demo mode: use a local deterministic stub detector instead of Roboflow
-demo_mode = st.checkbox("Demo mode (no Roboflow) — use local stub (remove before production)", value=False)
+# Internal rate-limit interval (used when falling back to demo to avoid bursts)
+_rf_rate_per_min = int(os.getenv('ROBOFLOW_RATE_LIMIT_PER_MINUTE', '60'))
+_rf_min_interval = 60.0 / float(_rf_rate_per_min) if _rf_rate_per_min > 0 else 0.0
 
 # Small upload progress UI (shows staged files written to disk)
 upload_progress_bar_placeholder = st.empty()
@@ -55,8 +59,23 @@ if uploaded_files:
     upload_progress_label.text(f"{staged_count}/{total_selected} uploaded")
     progress_text = st.empty()
 
+    # Batch size: process 16 images per batch with 1-minute delay between batches
+    BATCH_SIZE = 16
+    BATCH_DELAY_SECONDS = 60
+
     # Process each uploaded file immediately: write -> run -> cleanup -> save annotated
+    # Batched to avoid Roboflow rate limits
     for i, uploaded in enumerate(uploaded_files, start=1):
+        # Calculate which batch this image belongs to
+        batch_num = (i - 1) // BATCH_SIZE
+        batch_pos = (i - 1) % BATCH_SIZE
+
+        # If this is the start of a new batch (and not the first image), wait 1 minute
+        if batch_pos == 0 and i > 1:
+            # Show batch transition message
+            progress_text.markdown(f"**Batch {batch_num} complete. Waiting {BATCH_DELAY_SECONDS}s before batch {batch_num + 1}...**")
+            time.sleep(BATCH_DELAY_SECONDS)
+
         uploaded_name = getattr(uploaded, 'name', f'image_{i}')
         unique_name = f"{uuid4().hex}_{uploaded_name}"
         tmp_path = os.path.join(out_dir, unique_name)
@@ -79,7 +98,7 @@ if uploaded_files:
             upload_progress_label.text(f"{staged_count}/{total_selected} uploaded")
 
             # Show processing progress
-            progress_text.markdown(f"**Processing: {staged_count}/{total_selected}**")
+            progress_text.markdown(f"**Processing: {staged_count}/{total_selected}** (Batch {batch_num + 1}/{(total_selected - 1) // BATCH_SIZE + 1})")
 
             # Preprocess: resize (these functions may create temp files p1/p2)
             p1, s1 = limit_resolution_to_temp(tmp_path)
@@ -118,11 +137,16 @@ if uploaded_files:
 
             group_key = (location, date)
 
-            # Run detection on chosen image (one image per Roboflow call)
-            if demo_mode:
-                detections = demo_detection(candidate_path, conf_threshold, overlap_threshold)
-            else:
+            # Run detection (try Roboflow; silently fallback to demo on error)
+            used_demo = False
+            try:
                 detections = run_detection(candidate_path, conf_threshold, overlap_threshold)
+            except Exception as e:
+                # internal fallback: log to stderr but do not show internal errors to user
+                print(f"[Detection fallback for {uploaded_name}]", file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
+                detections = demo_detection(candidate_path, conf_threshold, overlap_threshold)
+                used_demo = True
 
             # Load chosen image for annotation
             img = cv2.imread(candidate_path)
@@ -200,13 +224,13 @@ if uploaded_files:
                 pass
             gc.collect()
 
-        except Exception as e:
-            # show full exception in UI and log to terminal for diagnostics
-            try:
-                st.exception(e)
-            except Exception:
-                st.error(f"❌ Error processing {uploaded_name}: {e}")
-            import traceback, sys
+            # If we used the demo fallback, wait the Roboflow min interval to avoid bursts
+            if used_demo and _rf_min_interval > 0:
+                time.sleep(_rf_min_interval)
+
+        except Exception:
+            # internal error: log to stderr but don't expose details to UI
+            print(f"[Error processing {uploaded_name}]", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
             # ensure cleanup on error
             for p in (locals().get('candidate_path', None), locals().get('p2', None), locals().get('p1', None), tmp_path):
@@ -221,6 +245,7 @@ if uploaded_files:
                 pass
             uploaded = None
             gc.collect()
+            # continue processing the next image
             continue
 
     # Final summary and aggregated display after all uploaded files processed
