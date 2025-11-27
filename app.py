@@ -17,6 +17,25 @@ import sys
 
 st.title("Pinniped Detection from Drone Imagery")
 
+# If a deployed error log exists, show its tail and offer a download (helps Streamlit Cloud debugging)
+try:
+    deployed_log = os.path.join(os.getcwd(), 'deployed_error_log.txt')
+    if os.path.exists(deployed_log):
+        try:
+            with open(deployed_log, 'r', encoding='utf-8', errors='replace') as f:
+                lines = f.readlines()
+            tail = ''.join(lines[-400:]) if len(lines) > 400 else ''.join(lines)
+            st.warning('Detected a deployment error log — showing last lines below.')
+            st.code(tail)
+            try:
+                st.download_button('Download deployed_error_log.txt', data=''.join(lines), file_name='deployed_error_log.txt')
+            except Exception:
+                pass
+        except Exception:
+            pass
+except Exception:
+    pass
+
 st.markdown("### ⚙️ Detection Thresholds")
 conf_threshold = st.slider("Confidence threshold (%)", 0, 100, 15, step=5)
 overlap_threshold = st.slider("Overlap threshold (%)", 0, 100, 30, step=5)
@@ -83,6 +102,7 @@ if uploaded_files:
 
     def _log_error(message: str):
         try:
+            # write to per-run and repo-root logs
             with open(error_log_path, 'a') as ef:
                 ef.write(f"---\n{message}\n")
                 ef.write(traceback.format_exc())
@@ -94,6 +114,27 @@ if uploaded_files:
                     df.write("\n")
             except Exception:
                 pass
+
+            # Best-effort: try to upload the error log to an anonymous paste service
+            try:
+                import requests
+                with open(error_log_path, 'rb') as fh:
+                    files = {'file': ('error_log.txt', fh)}
+                    # using 0x0.st which accepts multipart POST
+                    resp = requests.post('https://0x0.st', files=files, timeout=10)
+                    if resp.status_code == 200:
+                        url = resp.text.strip()
+                        # record URL to deployed log and stdout so platform logs capture it
+                        try:
+                            with open(deployed_log_path, 'a') as df:
+                                df.write(f"Uploaded error log URL: {url}\n")
+                        except Exception:
+                            pass
+                        print(f"[Uploaded error log] {url}", file=sys.stderr)
+            except Exception:
+                # ignore network/upload errors
+                pass
+
         except Exception:
             # best-effort: if logging fails, fallback to stderr
             print(message, file=sys.stderr)
