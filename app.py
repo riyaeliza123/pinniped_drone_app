@@ -62,233 +62,226 @@ if uploaded_files:
     BATCH_SIZE = 16
     BATCH_DELAY_SECONDS = 60
 
-    # Process each uploaded file immediately: write -> run -> cleanup -> save annotated
-    # Batched to avoid Roboflow rate limits
-    for i, uploaded in enumerate(uploaded_files, start=1):
-        # Calculate which batch this image belongs to
-        batch_num = (i - 1) // BATCH_SIZE
-        batch_pos = (i - 1) % BATCH_SIZE
+    # Process uploaded files in batches of 5 (stage batch -> process batch)
+    BATCH_SIZE = 5
+    for batch_start in range(0, total_selected, BATCH_SIZE):
+        batch_end = min(batch_start + BATCH_SIZE, total_selected)
+        batch = uploaded_files[batch_start:batch_end]
+        batch_items = []
 
-        # If this is the start of a new batch (and not the first image), wait 1 minute
-        if batch_pos == 0 and i > 1:
-            # Show batch transition message
-            progress_text.markdown(f"**Batch {batch_num} complete. Waiting {BATCH_DELAY_SECONDS}s before batch {batch_num + 1}...**")
-            time_module.sleep(BATCH_DELAY_SECONDS)
-
-        uploaded_name = getattr(uploaded, 'name', f'image_{i}')
-        unique_name = f"{uuid4().hex}_{uploaded_name}"
-        tmp_path = os.path.join(out_dir, unique_name)
-
-        try:
-            # write file to disk
-            with open(tmp_path, 'wb') as f:
-                f.write(uploaded.read())
-
-            # Extract EXIF metadata immediately from the original file BEFORE we resize
-            captured_lat = None
-            captured_lon = None
-            captured_date = None
-            captured_time = None
+        # Stage all files in this batch to disk and extract minimal EXIF
+        for j, uploaded in enumerate(batch, start=1):
+            i = batch_start + j
+            uploaded_name = getattr(uploaded, 'name', f'image_{i}')
+            unique_name = f"{uuid4().hex}_{uploaded_name}"
+            tmp_path = os.path.join(out_dir, unique_name)
             try:
-                captured_lat, captured_lon = extract_gps_from_image(tmp_path)
-            except Exception:
-                captured_lat = captured_lon = None
-            try:
-                captured_date, captured_time = get_capture_date_time(tmp_path)
-            except Exception:
-                captured_date = captured_time = None
+                with open(tmp_path, 'wb') as f:
+                    f.write(uploaded.read())
+                # Extract minimal EXIF immediately
+                try:
+                    captured_lat, captured_lon = extract_gps_from_image(tmp_path)
+                except Exception:
+                    captured_lat = captured_lon = None
+                try:
+                    captured_date, captured_time = get_capture_date_time(tmp_path)
+                except Exception:
+                    captured_date = captured_time = None
 
-            # Reduce image size by ~40% (scale to ~60%) to lower memory/disk usage
-            try:
-                img_tmp = cv2.imread(tmp_path)
-                if img_tmp is not None:
-                    h0, w0 = img_tmp.shape[:2]
-                    scale_pct = 0.6
-                    new_w = max(1, int(w0 * scale_pct))
-                    new_h = max(1, int(h0 * scale_pct))
-                    resized = cv2.resize(img_tmp, (new_w, new_h), interpolation=cv2.INTER_AREA)
-                    fd, reduced_path = tempfile.mkstemp(suffix='.jpg')
-                    os.close(fd)
-                    cv2.imwrite(reduced_path, resized, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                # Optionally reduce size immediately to lower disk/memory footprint
+                try:
+                    img_tmp = cv2.imread(tmp_path)
+                    if img_tmp is not None:
+                        h0, w0 = img_tmp.shape[:2]
+                        scale_pct = 0.6
+                        new_w = max(1, int(w0 * scale_pct))
+                        new_h = max(1, int(h0 * scale_pct))
+                        resized = cv2.resize(img_tmp, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                        fd, reduced_path = tempfile.mkstemp(suffix='.jpg')
+                        os.close(fd)
+                        cv2.imwrite(reduced_path, resized, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        try:
+                            os.remove(tmp_path)
+                        except Exception:
+                            pass
+                        tmp_path = reduced_path
                     try:
-                        os.remove(tmp_path)
+                        del img_tmp
                     except Exception:
                         pass
-                    tmp_path = reduced_path
-                try:
-                    del img_tmp
+                    try:
+                        del resized
+                    except Exception:
+                        pass
                 except Exception:
                     pass
+
+                batch_items.append({
+                    'tmp_path': tmp_path,
+                    'uploaded_name': uploaded_name,
+                    'captured_lat': captured_lat,
+                    'captured_lon': captured_lon,
+                    'captured_date': captured_date,
+                    'captured_time': captured_time,
+                })
+
+                # Release UploadedFile reference to free memory
                 try:
-                    del resized
+                    uploaded.file.close()
                 except Exception:
                     pass
-            except Exception:
-                # if resize fails, continue with original tmp_path
-                pass
+                uploaded = None
 
-            # update upload progress UI
-            staged_count += 1
+                # update upload progress UI
+                staged_count += 1
+                try:
+                    pct = int((staged_count / total_selected) * 100)
+                except Exception:
+                    pct = 0
+                try:
+                    upload_progress_bar_placeholder.progress(pct)
+                except Exception:
+                    pass
+                upload_progress_label.text(f"{staged_count}/{total_selected} uploaded")
+            except Exception:
+                print(f"[Error staging {uploaded_name}]", file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
+                continue
+
+        # Process each staged item in the batch sequentially
+        for item in batch_items:
+            tmp_path = item['tmp_path']
+            uploaded_name = item['uploaded_name']
+            captured_lat = item.get('captured_lat')
+            captured_lon = item.get('captured_lon')
+            captured_date = item.get('captured_date')
+            captured_time = item.get('captured_time')
+
             try:
-                pct = int((staged_count / total_selected) * 100)
-            except Exception:
-                pct = 0
-            try:
-                upload_progress_bar_placeholder.progress(pct)
-            except Exception:
-                pass
-            upload_progress_label.text(f"{staged_count}/{total_selected} uploaded")
+                progress_text.markdown(f"**Processing: {staged_count}/{total_selected} (batch {batch_start//BATCH_SIZE + 1})**")
 
-            # Show processing progress
-            progress_text.markdown(f"**Processing: {staged_count}/{total_selected}** (Batch {batch_num + 1}/{(total_selected - 1) // BATCH_SIZE + 1})")
+                # Preprocess: resize (these functions may create temp files p1/p2)
+                p1, s1 = limit_resolution_to_temp(tmp_path)
+                p2, s2 = progressive_resize_to_temp(p1)
+                candidate_path = p2 or p1 or tmp_path
+                if p2:
+                    scale = s1 * s2
+                elif p1:
+                    scale = s1
+                else:
+                    scale = 1.0
 
-            # Preprocess: resize (these functions may create temp files p1/p2)
-            p1, s1 = limit_resolution_to_temp(tmp_path)
-            p2, s2 = progressive_resize_to_temp(p1)
-            # choose best candidate for detection: prefer p2, then p1, then original
-            candidate_path = p2 or p1 or tmp_path
-            # compute effective scale: if p2 exists use s1*s2, elif p1 use s1, else 1.0
-            if p2:
-                scale = s1 * s2
-            elif p1:
-                scale = s1
-            else:
-                scale = 1.0
+                # Use captured EXIF metadata
+                lat, lon = captured_lat, captured_lon
+                date, time = captured_date, captured_time
+                location = get_location_name(lat)
 
-            # Use metadata extracted from the original upload (EXIF is lost by cv2 resize)
-            lat, lon = captured_lat, captured_lon
-            date, time = captured_date, captured_time
-            location = get_location_name(lat)
+                if lat is None or lon is None:
+                    st.warning(f"⚠️ No GPS data in {uploaded_name}. Skipping.")
+                    for p in (p2, p1, tmp_path):
+                        try:
+                            if p and os.path.exists(p):
+                                os.remove(p)
+                        except Exception:
+                            pass
+                    gc.collect()
+                    continue
 
-            if lat is None or lon is None:
-                st.warning(f"⚠️ No GPS data in {uploaded_name}. Skipping.")
-                # cleanup temp files
+                group_key = (location, date)
+
+                # Run detection (try Roboflow; silently fallback to demo on error)
+                used_demo = False
+                try:
+                    detections = run_detection(candidate_path, conf_threshold, overlap_threshold)
+                except Exception:
+                    print(f"[Detection fallback for {uploaded_name}]", file=sys.stderr)
+                    traceback.print_exc(file=sys.stderr)
+                    detections = demo_detection(candidate_path, conf_threshold, overlap_threshold)
+                    used_demo = True
+
+                # Load chosen image for annotation
+                img = cv2.imread(candidate_path)
+                if img is None:
+                    st.warning(f"❌ Could not read resized image {uploaded_name}")
+                    raise RuntimeError("Failed to read resized image")
+
+                gsd = compute_gsd({}, img.shape[1])
+
+                # Annotate using detections
+                annotator = sv.BoxAnnotator()
+                texts = [f"seal {conf*100:.1f}%" for conf in detections.confidence]
+                labeled = annotator.annotate(scene=img.copy(), detections=detections, labels=texts) \
+                    if "labels" in inspect.signature(annotator.annotate).parameters \
+                    else annotator.annotate(scene=img.copy(), detections=detections)
+
+                ann_tmp = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
+                ann_path = ann_tmp.name
+                ann_tmp.close()
+                cv2.imwrite(ann_path, labeled)
+                st.session_state['annotated_paths'].append(ann_path)
+
+                # Save detections scaled back to original image size
+                scaled_boxes = (detections.xyxy * scale) if hasattr(detections.xyxy, "__mul__") else detections.xyxy
+                for seal_idx, (box, conf) in enumerate(zip(scaled_boxes, detections.confidence), start=1):
+                    st.session_state['all_detections_records'].append({
+                        "image_name": uploaded_name,
+                        "seal_id": seal_idx,
+                        "x_min": float(box[0]),
+                        "y_min": float(box[1]),
+                        "x_max": float(box[2]),
+                        "y_max": float(box[3]),
+                        "confidence": float(conf)
+                    })
+
+                # Populate grouped_coords
+                for box in detections.xyxy:
+                    xc = (box[0] + box[2]) / 2
+                    yc = (box[1] + box[3]) / 2
+                    dx_m = (xc - img.shape[1] / 2) * gsd
+                    dy_m = (yc - img.shape[0] / 2) * gsd
+                    lat_off = dy_m / 111320
+                    lon_off = dx_m / (111320 * cos(radians(lat)))
+                    st.session_state['grouped_coords'][group_key].append(((lat + lat_off, lon + lon_off), gsd, time))
+
+                st.session_state['summary_records'].append({
+                    "image_name": uploaded_name,
+                    "pinniped_count": len(detections.xyxy),
+                    "latitude": lat,
+                    "longitude": lon,
+                    "location": location,
+                    "date": date,
+                    "time": time
+                })
+
+                # cleanup temp files for this item
                 for p in (p2, p1, tmp_path):
                     try:
                         if p and os.path.exists(p):
                             os.remove(p)
                     except Exception:
                         pass
+
                 try:
-                    uploaded.file.close()
+                    del img
                 except Exception:
                     pass
-                uploaded = None
+                gc.collect()
+
+                # If we used demo fallback, wait small interval to avoid bursts
+                if used_demo and _rf_min_interval > 0:
+                    time_module.sleep(_rf_min_interval)
+
+            except Exception:
+                print(f"[Error processing {uploaded_name}]", file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
+                for p in (locals().get('candidate_path', None), locals().get('p2', None), locals().get('p1', None), tmp_path):
+                    try:
+                        if p and os.path.exists(p):
+                            os.remove(p)
+                    except Exception:
+                        pass
                 gc.collect()
                 continue
-
-            group_key = (location, date)
-
-            # Run detection (try Roboflow; silently fallback to demo on error)
-            used_demo = False
-            try:
-                detections = run_detection(candidate_path, conf_threshold, overlap_threshold)
-            except Exception as e:
-                # internal fallback: log to stderr but do not show internal errors to user
-                print(f"[Detection fallback for {uploaded_name}]", file=sys.stderr)
-                traceback.print_exc(file=sys.stderr)
-                detections = demo_detection(candidate_path, conf_threshold, overlap_threshold)
-                used_demo = True
-
-            # Load chosen image for annotation
-            img = cv2.imread(candidate_path)
-            if img is None:
-                st.warning(f"❌ Could not read resized image {uploaded_name}")
-                raise RuntimeError("Failed to read resized image")
-
-            gsd = compute_gsd({}, img.shape[1])
-
-            # Annotate using detections (coordinates are relative to candidate_path)
-            annotator = sv.BoxAnnotator()
-            texts = [f"seal {conf*100:.1f}%" for conf in detections.confidence]
-            labeled = annotator.annotate(scene=img.copy(), detections=detections, labels=texts) \
-                if "labels" in inspect.signature(annotator.annotate).parameters \
-                else annotator.annotate(scene=img.copy(), detections=detections)
-
-            # Save annotated image to a temp file for later aggregated display
-            ann_tmp = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
-            ann_path = ann_tmp.name
-            ann_tmp.close()
-            cv2.imwrite(ann_path, labeled)
-            st.session_state['annotated_paths'].append(ann_path)
-
-            # print processing log for this image
-            try:
-                st.write(f"Processed {staged_count}/{total_selected}: {uploaded_name} — {len(detections.xyxy)} seals")
-            except Exception:
-                pass
-
-            # Save detections scaled back to original image size
-            scaled_boxes = (detections.xyxy * scale) if hasattr(detections.xyxy, "__mul__") else detections.xyxy
-            for seal_idx, (box, conf) in enumerate(zip(scaled_boxes, detections.confidence), start=1):
-                st.session_state['all_detections_records'].append({
-                    "image_name": uploaded_name,
-                    "seal_id": seal_idx,
-                    "x_min": float(box[0]),
-                    "y_min": float(box[1]),
-                    "x_max": float(box[2]),
-                    "y_max": float(box[3]),
-                    "confidence": float(conf)
-                })
-
-            # Populate grouped_coords for clustering using resized image coords
-            for box in detections.xyxy:
-                xc = (box[0] + box[2]) / 2
-                yc = (box[1] + box[3]) / 2
-                dx_m = (xc - img.shape[1] / 2) * gsd
-                dy_m = (yc - img.shape[0] / 2) * gsd
-                lat_off = dy_m / 111320
-                lon_off = dx_m / (111320 * cos(radians(lat)))
-                st.session_state['grouped_coords'][group_key].append(((lat + lat_off, lon + lon_off), gsd, time))
-
-            st.session_state['summary_records'].append({
-                "image_name": uploaded_name,
-                "pinniped_count": len(detections.xyxy),
-                "latitude": lat,
-                "longitude": lon,
-                "location": location,
-                "date": date,
-                "time": time
-            })
-
-            # cleanup temp files created during processing (only if present)
-            for p in (p2, p1, tmp_path):
-                try:
-                    if p and os.path.exists(p):
-                        os.remove(p)
-                except Exception:
-                    pass
-
-            # Free memory
-            try:
-                del img
-            except Exception:
-                pass
-            gc.collect()
-
-            # If we used the demo fallback, wait the Roboflow min interval to avoid bursts
-            if used_demo and _rf_min_interval > 0:
-                time_module.sleep(_rf_min_interval)
-
-        except Exception:
-            # internal error: log to stderr but don't expose details to UI
-            print(f"[Error processing {uploaded_name}]", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
-            # ensure cleanup on error
-            for p in (locals().get('candidate_path', None), locals().get('p2', None), locals().get('p1', None), tmp_path):
-                try:
-                    if p and os.path.exists(p):
-                        os.remove(p)
-                except Exception:
-                    pass
-            try:
-                uploaded.file.close()
-            except Exception:
-                pass
-            uploaded = None
-            gc.collect()
-            # continue processing the next image
-            continue
 
     # Final summary and aggregated display after all uploaded files processed
     progress_text.markdown(f"**✅ Complete! {staged_count}/{total_selected} processed**")
