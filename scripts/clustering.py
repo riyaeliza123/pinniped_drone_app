@@ -11,12 +11,12 @@ def compute_unique_counts(grouped_coords, max_counts):
 
     for (loc, date), coords_data in grouped_coords.items():
         if not coords_data:
-            folder_summary_records.append({"survey_location": loc, "date": date, "unique_pinniped_count": 0})
+            folder_summary_records.append({"survey_location": loc, "date": date, "unique_count": 0})
             continue
-
-        coords, _, _ = zip(*coords_data)
+        
+        coords = coords_data
         coords_xy = np.array([transformer.transform(lon, lat) for lat, lon in coords])
-
+        
         if len(coords_xy) == 1:
             count = 1
         else:
@@ -31,7 +31,7 @@ def compute_unique_counts(grouped_coords, max_counts):
         folder_summary_records.append({
             "survey_location": loc,
             "date": date,
-            "unique_pinniped_count": count
+            "unique_count": count
         })
 
     return folder_summary_records
