@@ -22,6 +22,11 @@ conf_threshold = st.slider("Confidence threshold (%)", 0, 100, 15, step=5)
 overlap_threshold = st.slider("Overlap threshold (%)", 0, 100, 30, step=5)
 
 st.markdown("Upload drone images to detect seals using a YOLOv11 model (via Roboflow).")
+try:
+    ui_batch_size = st.sidebar.slider("Batch size (smaller if deployment has limited RAM)", 1, 10, 5)
+except Exception:
+    ui_batch_size = 5
+
 uploaded_files = st.file_uploader("Upload Drone Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
 # Keep a processing flag in session state; buttons are shown only after upload
@@ -73,6 +78,8 @@ if uploaded_files:
     # prepare an error log file inside out_dir for deployed-run diagnostics
     error_log_path = os.path.join(out_dir, 'error_log.txt')
     st.session_state['error_log_path'] = error_log_path
+    # also write a duplicate deployed log to the repository root for easy access
+    deployed_log_path = os.path.join(os.getcwd(), 'deployed_error_log.txt')
 
     def _log_error(message: str):
         try:
@@ -80,10 +87,24 @@ if uploaded_files:
                 ef.write(f"---\n{message}\n")
                 ef.write(traceback.format_exc())
                 ef.write("\n")
+            try:
+                with open(deployed_log_path, 'a') as df:
+                    df.write(f"---\n{message}\n")
+                    df.write(traceback.format_exc())
+                    df.write("\n")
+            except Exception:
+                pass
         except Exception:
             # best-effort: if logging fails, fallback to stderr
             print(message, file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
+
+    def _free_space_mb(path: str) -> int:
+        try:
+            du = shutil.disk_usage(path)
+            return int(du.free / (1024 * 1024))
+        except Exception:
+            return 0
 
     # Reset per-run storage for annotated images and records
     st.session_state['annotated_paths'] = []
@@ -104,12 +125,12 @@ if uploaded_files:
     upload_progress_label.text(f"{staged_count}/{total_selected} uploaded")
     progress_text = st.empty()
 
-    # Batch size: process 16 images per batch with 1-minute delay between batches
-    BATCH_SIZE = 16
+    # Batch configuration: inter-batch delay and batch size (UI-configurable)
     BATCH_DELAY_SECONDS = 60
-
-    # Process uploaded files in batches of 5 (stage batch -> process batch)
-    BATCH_SIZE = 5
+    try:
+        BATCH_SIZE = int(ui_batch_size)
+    except Exception:
+        BATCH_SIZE = 5
     for batch_start in range(0, total_selected, BATCH_SIZE):
         batch_end = min(batch_start + BATCH_SIZE, total_selected)
         batch = uploaded_files[batch_start:batch_end]
@@ -194,6 +215,15 @@ if uploaded_files:
                 continue
 
         # Process each staged item in the batch sequentially
+        # Check free disk space before processing the batch
+        try:
+            free_mb = _free_space_mb(out_dir)
+            if free_mb and free_mb < 200:
+                _log_error(f"Low disk space before processing batch starting at {batch_start}: {free_mb} MB free")
+                st.error(f"Insufficient disk space on server ({free_mb} MB free). Aborting processing to avoid crash.")
+                break
+        except Exception:
+            pass
         for item in batch_items:
             tmp_path = item['tmp_path']
             uploaded_name = item['uploaded_name']
