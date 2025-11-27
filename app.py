@@ -7,6 +7,7 @@ import tempfile
 import gc
 import supervision as sv
 import inspect
+import psutil
 from collections import defaultdict
 from math import cos, radians
 from uuid import uuid4
@@ -31,6 +32,11 @@ upload_progress_bar = st.empty()
 upload_progress_label = st.empty()
 
 if uploaded_files:
+    # Track RAM usage
+    process = psutil.Process()
+    initial_memory = process.memory_info().rss / (1024 * 1024)  # MB
+    peak_memory = initial_memory
+    
     if 'out_dir' not in st.session_state:
         st.session_state['out_dir'] = tempfile.mkdtemp()
     out_dir = st.session_state['out_dir']
@@ -142,6 +148,10 @@ if uploaded_files:
             del img, labeled
             gc.collect()
 
+            # Track peak memory
+            current_memory = process.memory_info().rss / (1024 * 1024)
+            peak_memory = max(peak_memory, current_memory)
+
             processed_count += 1
             upload_progress_bar.progress(processed_count / total_files)
             upload_progress_label.text(f"{processed_count}/{total_files} processed")
@@ -155,6 +165,10 @@ if uploaded_files:
                     except:
                         pass
             gc.collect()
+
+    # Final memory stats
+    final_memory = process.memory_info().rss / (1024 * 1024)
+    memory_used = final_memory - initial_memory
 
     progress_text.markdown(f"**✅ Complete! {processed_count}/{total_files} processed**")
 
@@ -174,3 +188,13 @@ if uploaded_files:
         folder_summary_records,
         st.session_state['all_detections_records']
     )
+
+# Display RAM usage
+    st.markdown("### 📊 Memory Usage")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Peak RAM", f"{peak_memory:.1f} MB")
+    with col2:
+        st.metric("Final RAM", f"{final_memory:.1f} MB")
+    with col3:
+        st.metric("RAM Increase", f"{memory_used:.1f} MB")
