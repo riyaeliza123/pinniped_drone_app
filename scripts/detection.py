@@ -8,108 +8,103 @@ import supervision as sv
 from scripts.config import model
 import cv2
 import hashlib
+import streamlit as st
+from inference_sdk import InferenceHTTPClient
+import math
 
 
-def demo_detection(image_path, confidence, overlap):
-    """Return a deterministic set of demo detections for `image_path`.
-    Produces a few boxes positioned across the image so the pipeline can be tested
-    without calling Roboflow. The boxes are deterministic (based on a hash)
-    so repeated runs look similar for the same image.
-    """
-    img = cv2.imread(image_path)
+# Prefer Streamlit secrets, then env var (fix typo fallback)
+def _get_api_key():
+    try:
+        import streamlit as st
+        return st.secrets.get("ROBOFLOW_API_KEY") or st.secrets.get("ROBOWFLOW_API_KEY")
+    except Exception:
+        return os.getenv("ROBOFLOW_API_KEY")
+
+API_KEY = _get_api_key()
+MODEL_ID = "pinnipeds-drone-imagery/18"
+
+# Inference SDK client
+_client = InferenceHTTPClient(
+    api_url="https://serverless.roboflow.com",
+    api_key=API_KEY
+)
+
+def _iou(a, b):
+    ax1, ay1, ax2, ay2 = a; bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1); iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2); iy2 = min(ay2, by2)
+    if ix2 <= ix1 or iy2 <= iy1:
+        return 0.0
+    inter = (ix2 - ix1) * (iy2 - iy1)
+    a_area = (ax2 - ax1) * (ay2 - ay1); b_area = (bx2 - bx1) * (by2 - by1)
+    return inter / max(a_area + b_area - inter, 1e-9)
+
+
+def _nms(boxes, scores, iou_thresh):
+    if not boxes:
+        return [], []
+    order = sorted(range(len(boxes)), key=lambda i: scores[i], reverse=True)
+    keep = []
+    while order:
+        i = order.pop(0)
+        keep.append(i)
+        order = [j for j in order if _iou(boxes[i], boxes[j]) <= iou_thresh]
+    return [boxes[k] for k in keep], [scores[k] for k in keep]
+
+
+def _ensure_jpeg(input_path):
+    img = cv2.imread(input_path)
     if img is None:
-        return sv.Detections(xyxy=np.zeros((0, 4)), confidence=np.array([]), class_id=np.array([]))
+        raise RuntimeError(f"OpenCV could not read: {input_path}")
+    base, _ = os.path.splitext(input_path)
+    out_path = base + ".jpg"
+    ok = cv2.imwrite(out_path, img, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+    if not ok:
+        raise RuntimeError(f"Failed to write JPEG: {out_path}")
+    return out_path
 
-    h, w = img.shape[:2]
-    # derive a small integer seed from the path so results are deterministic
-    seed = int(hashlib.md5(image_path.encode('utf-8')).hexdigest()[:8], 16)
-
-    # choose 1-4 boxes based on seed
-    n = 1 + (seed % 4)
-    xyxy = []
-    conf = []
-    cid = []
-    for i in range(n):
-        # position boxes in different quadrants
-        cx = int(((i + 1) * w) / (n + 1))
-        cy = int(((i + 1) * h) / (n + 1))
-        box_w = int(w * 0.15)
-        box_h = int(h * 0.12)
-        x1 = max(0, cx - box_w // 2)
-        y1 = max(0, cy - box_h // 2)
-        x2 = min(w - 1, cx + box_w // 2)
-        y2 = min(h - 1, cy + box_h // 2)
-        xyxy.append([x1, y1, x2, y2])
-        # confidence varies but honors threshold-ish behavior
-        conf_val = 0.6 + ((seed >> (i * 3)) % 40) / 100.0
-        conf.append(conf_val)
-        cid.append(0)
-
-    return sv.Detections(xyxy=np.array(xyxy), confidence=np.array(conf), class_id=np.array(cid))
 
 def parse_roboflow_detections(result_json):
     xyxy, conf, cid = [], [], []
     for pred in result_json.get("predictions", []):
-        x, y, w, h = pred["x"], pred["y"], pred["width"], pred["height"]
+        try:
+            x, y, w, h = float(pred["x"]), float(pred["y"]), float(pred["width"]), float(pred["height"])
+            c = float(pred.get("confidence", 0.0))
+        except Exception:
+            continue
         xyxy.append([x - w / 2, y - h / 2, x + w / 2, y + h / 2])
-        conf.append(pred["confidence"])
+        conf.append(c)
         cid.append(0)
     if not xyxy:
         return sv.Detections(xyxy=np.zeros((0, 4)), confidence=np.array([]), class_id=np.array([]))
     return sv.Detections(xyxy=np.array(xyxy), confidence=np.array(conf), class_id=np.array(cid))
 
-def run_detection(image_path, confidence, overlap):
-    # default direct Roboflow call (wrapped by _roboflow_predict_with_retries below)
-    result = _roboflow_predict_with_retries(image_path, confidence, overlap)
-    return parse_roboflow_detections(result)
 
-def run_batch_detection(image_paths, confidence, overlap):
-    """Process a batch of images and return detection results (rate-limited).
+def run_detection(image_path, confidence_percent, overlap_percent):
+    if not os.path.exists(image_path):
+        raise FileNotFoundError(f"Image not found: {image_path}")
 
-    This uses the same rate-limit and retry logic as `run_detection`.
-    """
-    results = []
-    for path in image_paths:
-        det = run_detection(path, confidence, overlap)
-        results.append(det)
-    return results
+    send_path = _ensure_jpeg(image_path)
+    result = _client.infer(send_path, model_id=MODEL_ID)
 
+    # threshold + NMS
+    det = parse_roboflow_detections(result)
+    conf_cut = confidence_percent / 100.0
+    iou_cut = overlap_percent / 100.0
 
-# --- Rate limiting and retry/backoff logic ---
-# Config via environment variables with sensible defaults
-RATE_LIMIT_PER_MINUTE = int(os.getenv("ROBOFLOW_RATE_LIMIT_PER_MINUTE", "60"))
-MAX_RETRIES = int(os.getenv("ROBOFLOW_MAX_RETRIES", "5"))
-BACKOFF_BASE = float(os.getenv("ROBOFLOW_BACKOFF_BASE", "1.0"))
+    # filter by confidence
+    mask = det.confidence >= conf_cut
+    det = sv.Detections(
+        xyxy=det.xyxy[mask],
+        confidence=det.confidence[mask],
+        class_id=(det.class_id[mask] if det.class_id.size else np.zeros(np.sum(mask), dtype=int))
+    )
 
-# Internal rate-limiting state
-_last_call_time = 0.0
-_rate_lock = threading.Lock()
-
-
-def _wait_for_rate_limit():
-    if RATE_LIMIT_PER_MINUTE <= 0:
-        return
-    min_interval = 60.0 / float(RATE_LIMIT_PER_MINUTE)
-    global _last_call_time
-    with _rate_lock:
-        now = time.time()
-        elapsed = now - _last_call_time
-        if elapsed < min_interval:
-            time.sleep(min_interval - elapsed)
-        _last_call_time = time.time()
-
-
-def _roboflow_predict_with_retries(image_path, confidence, overlap):
-    attempt = 0
-    while True:
-        try:
-            _wait_for_rate_limit()
-            result = model.predict(image_path, confidence=confidence, overlap=overlap).json()
-            return result
-        except Exception:
-            attempt += 1
-            if attempt > MAX_RETRIES:
-                raise
-            backoff = BACKOFF_BASE * (2 ** (attempt - 1))
-            jitter = random.uniform(0, backoff * 0.1)
-            time.sleep(backoff + jitter)
+    # NMS
+    boxes = det.xyxy.tolist()
+    scores = det.confidence.tolist()
+    boxes, scores = _nms(boxes, scores, iou_cut)
+    if not boxes:
+        return sv.Detections(xyxy=np.zeros((0, 4)), confidence=np.array([]), class_id=np.array([]))
+    return sv.Detections(xyxy=np.array(boxes), confidence=np.array(scores), class_id=np.zeros(len(boxes), dtype=int))
