@@ -35,7 +35,7 @@ except:
         st.error("S3_BUCKET_NAME not configured. Please add it to .streamlit/secrets.toml")
         st.stop()
 
-st.title("Pinniped Detection from Drone Imagery")
+st.title("Pinniped Detection from Drone Imagery of Log Booms")
 
 st.markdown("### ⚙️ Detection Thresholds")
 conf_threshold = st.slider("Confidence threshold (%)", 0, 100, 15, step=5)
@@ -47,6 +47,7 @@ st.info("""
 1. Upload your images folder as a ZIP file to Dropbox
 2. Right-click the ZIP → Share → Copy link
 3. Paste the link below
+4. Click "Download and Process from Dropbox"
 
 **Note:** The ZIP will be downloaded to S3, extracted, and processed from there.
 """)
