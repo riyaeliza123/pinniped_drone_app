@@ -10,10 +10,7 @@ exifread
 pyproj>=3.7.1
 inference-sdk
 psutil
-<<<<<<< HEAD
 boto3
-=======
->>>>>>> 63c828a4dc9aefaa13635e493499c2bc297b9ede
 
 # ML / numeric
 numpy
