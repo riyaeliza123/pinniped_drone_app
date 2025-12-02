@@ -9,11 +9,11 @@ def get_s3_client():
         import streamlit as st
         aws_access_key = st.secrets.get("AWS_ACCESS_KEY_ID")
         aws_secret_key = st.secrets.get("AWS_SECRET_ACCESS_KEY")
-        aws_region = st.secrets.get("AWS_REGION", "us-west-1")
+        aws_region = st.secrets.get("AWS_REGION", "us-east-1")
     except:
         aws_access_key = os.getenv("AWS_ACCESS_KEY_ID")
         aws_secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-        aws_region = os.getenv("AWS_REGION", "us-west-1")
+        aws_region = os.getenv("AWS_REGION", "us-east-1")
     
     return boto3.client(
         's3',
@@ -21,21 +21,6 @@ def get_s3_client():
         aws_secret_access_key=aws_secret_key,
         region_name=aws_region
     )
-
-def generate_presigned_post(bucket_name, original_filename, expiration=3600):
-    """Generate presigned POST URL for direct browser upload"""
-    s3 = get_s3_client()
-    unique_key = f"uploads/{uuid4().hex}_{original_filename}"
-    
-    try:
-        response = s3.generate_presigned_post(
-            Bucket=bucket_name,
-            Key=unique_key,
-            ExpiresIn=expiration
-        )
-        return response, unique_key
-    except ClientError as e:
-        raise RuntimeError(f"Failed to generate presigned URL: {e}")
 
 def generate_presigned_url(bucket_name, s3_key, expiration=3600):
     """Generate presigned GET URL for Roboflow to access the image"""
@@ -51,7 +36,7 @@ def generate_presigned_url(bucket_name, s3_key, expiration=3600):
         raise RuntimeError(f"Failed to generate presigned URL: {e}")
 
 def upload_to_s3_direct(file_bytes, bucket_name, original_filename):
-    """Direct upload (fallback for server-side if presigned fails)"""
+    """Direct upload to S3"""
     s3 = get_s3_client()
     unique_key = f"uploads/{uuid4().hex}_{original_filename}"
     s3.put_object(Bucket=bucket_name, Key=unique_key, Body=file_bytes)
