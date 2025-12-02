@@ -10,18 +10,13 @@ import inspect
 import psutil
 from collections import defaultdict
 from math import cos, radians
+from pathlib import Path
 
-from scripts.detection import run_detection_from_url
+from scripts.detection import run_detection_from_local
 from scripts.exif_utils import extract_gps_from_image, get_capture_date_time, get_location_name
 from scripts.image_utils import limit_resolution_to_temp, progressive_resize_to_temp, compute_gsd
 from scripts.clustering import compute_unique_counts
 from scripts.summaries import display_and_download_summary
-from scripts.s3_utils import upload_to_s3_direct, generate_presigned_url, delete_from_s3, download_from_s3
-
-try:
-    S3_BUCKET = st.secrets["S3_BUCKET_NAME"]
-except:
-    S3_BUCKET = os.getenv("S3_BUCKET_NAME", "pinniped-drone-uploads")
 
 st.title("Pinniped Detection from Drone Imagery")
 
@@ -29,208 +24,197 @@ st.markdown("### ⚙️ Detection Thresholds")
 conf_threshold = st.slider("Confidence threshold (%)", 0, 100, 15, step=5)
 overlap_threshold = st.slider("Overlap / NMS threshold (%)", 0, 100, 30, step=5)
 
-st.markdown("Upload drone images to detect seals using Roboflow serverless inference.")
+st.markdown("### 📁 Select Images")
+folder_path = st.text_input("Enter folder path with drone images:", value="")
 
-uploaded_files = st.file_uploader("Upload Drone Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
-
-if uploaded_files:
-    process = psutil.Process()
-    initial_memory = process.memory_info().rss / (1024 * 1024)
-    peak_memory = initial_memory
+if folder_path and os.path.isdir(folder_path):
+    image_files = []
+    for ext in ['*.jpg', '*.jpeg', '*.png', '*.JPG', '*.JPEG', '*.PNG']:
+        image_files.extend(Path(folder_path).glob(ext))
     
-    if 'out_dir' not in st.session_state:
-        st.session_state['out_dir'] = tempfile.mkdtemp()
-    out_dir = st.session_state['out_dir']
+    # Remove duplicates (case-insensitive file systems return same file twice)
+    image_files = list(set(str(f) for f in image_files))
+    
+    if not image_files:
+        st.warning("No images found in folder.")
+        st.stop()
+    
+    st.success(f"Found {len(image_files)} images")
+    
+    if st.button("Process Images"):
+        process = psutil.Process()
+        initial_memory = process.memory_info().rss / (1024 * 1024)
+        peak_memory = initial_memory
+        
+        if 'out_dir' not in st.session_state:
+            st.session_state['out_dir'] = tempfile.mkdtemp()
+        out_dir = st.session_state['out_dir']
 
-    # Initialize session state only once
-    if 'processing_started' not in st.session_state:
-        st.session_state['processing_started'] = True
         st.session_state['annotated_paths'] = []
         st.session_state['all_detections_records'] = []
         st.session_state['summary_records'] = []
         st.session_state['grouped_coords'] = defaultdict(list)
         st.session_state['max_counts'] = defaultdict(int)
-        st.session_state['processed_files'] = []
 
-    total_files = len(uploaded_files)
-    progress_bar = st.progress(0)
-    progress_label = st.empty()
-    status_text = st.empty()
+        total_files = len(image_files)
+        progress_bar = st.progress(0)
+        progress_label = st.empty()
+        status_text = st.empty()
 
-    for idx, uploaded_file in enumerate(uploaded_files):
-        if uploaded_file.name in st.session_state['processed_files']:
-            continue
-
-        tmp_path = None
-        local_path = None
-        s3_key = None
-
-        try:
-            status_text.markdown(f"**Processing {idx + 1}/{total_files}**: {uploaded_file.name}")
-
-            # Write to disk in chunks
-            tmp_path = os.path.join(out_dir, f"tmp_{idx}_{uploaded_file.name}")
-            with open(tmp_path, 'wb') as f:
-                while True:
-                    chunk = uploaded_file.read(8192)
-                    if not chunk:
-                        break
-                    f.write(chunk)
+        for idx, image_path in enumerate(image_files):
+            p1 = None
+            p2 = None
             
-            # Extract EXIF
-            lat, lon = extract_gps_from_image(tmp_path)
-            date, time = get_capture_date_time(tmp_path)
+            try:
+                filename = os.path.basename(image_path)
+                status_text.markdown(f"**Processing {idx + 1}/{total_files}**: {filename}")
 
-            if lat is None or lon is None:
-                st.warning(f"No GPS in {uploaded_file.name}. Skipped.")
-                if tmp_path and os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-                st.session_state['processed_files'].append(uploaded_file.name)
-                continue
+                # Extract EXIF
+                lat, lon = extract_gps_from_image(image_path)
+                date, time = get_capture_date_time(image_path)
 
-            # Resize for Roboflow limits
-            p1, s1 = limit_resolution_to_temp(tmp_path)
-            p2, s2 = progressive_resize_to_temp(p1)
-            final_path = p2 or p1 or tmp_path
-            scale = (s1 * s2) if p2 else (s1 if p1 else 1.0)
+                if lat is None or lon is None:
+                    st.warning(f"No GPS in {filename}. Skipped.")
+                    continue
 
-            # Upload to S3
-            with open(final_path, 'rb') as f:
-                resized_bytes = f.read()
-            
-            s3_key = upload_to_s3_direct(resized_bytes, S3_BUCKET, f"upload_{idx}_{uploaded_file.name}")
-            del resized_bytes
+                # Resize for Roboflow limits
+                p1, s1 = limit_resolution_to_temp(image_path)
+                p2, s2 = progressive_resize_to_temp(p1)
+                final_path = p2 or p1 or image_path
+                scale = (s1 * s2) if p2 else (s1 if p1 else 1.0)
 
-            # Cleanup local temps
-            for p in (p2, p1, tmp_path):
-                if p and os.path.exists(p):
-                    os.remove(p)
-            gc.collect()
+                # Run detection from local file
+                detections = run_detection_from_local(final_path, conf_threshold, overlap_threshold)
 
-            # Generate presigned URL for Roboflow
-            s3_url = generate_presigned_url(S3_BUCKET, s3_key, expiration=600)
-            location = get_location_name(lat)
-            group_key = (location, date)
+                # Read for annotation BEFORE cleanup
+                img = cv2.imread(final_path)
+                if img is None:
+                    raise RuntimeError(f"Could not read {filename}")
 
-            # Run detection from S3
-            detections = run_detection_from_url(s3_url, conf_threshold, overlap_threshold)
+                # NOW cleanup resize temps (after reading)
+                for p in (p2, p1):
+                    if p and p != image_path and os.path.exists(p):
+                        try:
+                            os.remove(p)
+                        except:
+                            pass
 
-            # Download for annotation
-            local_path = os.path.join(out_dir, f"ann_{idx}.jpg")
-            download_from_s3(S3_BUCKET, s3_key, local_path)
+                gsd = compute_gsd({}, img.shape[1])
 
-            img = cv2.imread(local_path)
-            if img is None:
-                raise RuntimeError(f"Could not read {uploaded_file.name}")
+                annotator = sv.BoxAnnotator()
+                texts = [f"seal {c*100:.1f}%" for c in detections.confidence]
+                labeled = annotator.annotate(scene=img.copy(), detections=detections, labels=texts) \
+                    if "labels" in inspect.signature(annotator.annotate).parameters \
+                    else annotator.annotate(scene=img.copy(), detections=detections)
 
-            gsd = compute_gsd({}, img.shape[1])
+                ann_tmp = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
+                ann_path = ann_tmp.name
+                ann_tmp.close()
+                cv2.imwrite(ann_path, labeled)
+                st.session_state['annotated_paths'].append(ann_path)
 
-            annotator = sv.BoxAnnotator()
-            texts = [f"seal {c*100:.1f}%" for c in detections.confidence]
-            labeled = annotator.annotate(scene=img.copy(), detections=detections, labels=texts) \
-                if "labels" in inspect.signature(annotator.annotate).parameters \
-                else annotator.annotate(scene=img.copy(), detections=detections)
+                # Scale boxes back to original coordinates
+                scaled_boxes = [[b[0]*scale, b[1]*scale, b[2]*scale, b[3]*scale] for b in detections.xyxy]
 
-            ann_tmp = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
-            ann_path = ann_tmp.name
-            ann_tmp.close()
-            cv2.imwrite(ann_path, labeled)
-            st.session_state['annotated_paths'].append(ann_path)
+                for seal_idx, (box, conf) in enumerate(zip(scaled_boxes, detections.confidence), start=1):
+                    st.session_state['all_detections_records'].append({
+                        "image_name": filename,
+                        "seal_id": seal_idx,
+                        "x_min": float(box[0]),
+                        "y_min": float(box[1]),
+                        "x_max": float(box[2]),
+                        "y_max": float(box[3]),
+                        "confidence": float(conf)
+                    })
 
-            # Scale boxes back to original coordinates
-            scaled_boxes = [[b[0]*scale, b[1]*scale, b[2]*scale, b[3]*scale] for b in detections.xyxy]
+                location = get_location_name(lat)
+                group_key = (location, date)
 
-            for seal_idx, (box, conf) in enumerate(zip(scaled_boxes, detections.confidence), start=1):
-                st.session_state['all_detections_records'].append({
-                    "image_name": uploaded_file.name,
-                    "seal_id": seal_idx,
-                    "x_min": float(box[0]),
-                    "y_min": float(box[1]),
-                    "x_max": float(box[2]),
-                    "y_max": float(box[3]),
-                    "confidence": float(conf)
+                for box in detections.xyxy:
+                    xc = (box[0] + box[2]) / 2
+                    yc = (box[1] + box[3]) / 2
+                    dx_m = (xc - img.shape[1] / 2) * gsd
+                    dy_m = (yc - img.shape[0] / 2) * gsd
+                    lat_off = dy_m / 111320
+                    lon_off = dx_m / (111320 * cos(radians(lat)))
+                    st.session_state['grouped_coords'][group_key].append((lat + lat_off, lon + lon_off))
+
+                st.session_state['summary_records'].append({
+                    "image_name": filename,
+                    "pinniped_count": len(scaled_boxes),
+                    "latitude": lat,
+                    "longitude": lon,
+                    "location": location,
+                    "date": date,
+                    "time": time
                 })
 
-            for box in detections.xyxy:
-                xc = (box[0] + box[2]) / 2
-                yc = (box[1] + box[3]) / 2
-                dx_m = (xc - img.shape[1] / 2) * gsd
-                dy_m = (yc - img.shape[0] / 2) * gsd
-                lat_off = dy_m / 111320
-                lon_off = dx_m / (111320 * cos(radians(lat)))
-                st.session_state['grouped_coords'][group_key].append((lat + lat_off, lon + lon_off))
+                key = (location, date)
+                current_max = st.session_state['max_counts'].get(key, 0)
+                st.session_state['max_counts'][key] = max(current_max, len(scaled_boxes))
 
-            st.session_state['summary_records'].append({
-                "image_name": uploaded_file.name,
-                "pinniped_count": len(scaled_boxes),
-                "latitude": lat,
-                "longitude": lon,
-                "location": location,
-                "date": date,
-                "time": time
-            })
+                del img, labeled
+                gc.collect()
 
-            key = (location, date)
-            current_max = st.session_state['max_counts'].get(key, 0)
-            st.session_state['max_counts'][key] = max(current_max, len(scaled_boxes))
+                current_memory = process.memory_info().rss / (1024 * 1024)
+                peak_memory = max(peak_memory, current_memory)
 
-            # Cleanup
-            if local_path and os.path.exists(local_path):
-                os.remove(local_path)
-            delete_from_s3(S3_BUCKET, s3_key)
+                progress_bar.progress((idx + 1) / total_files)
+                progress_label.text(f"{idx + 1}/{total_files} complete")
 
-            del img, labeled
-            gc.collect()
+            except Exception as e:
+                st.error(f"Error processing {filename}: {e}")
+                import traceback
+                st.text(traceback.format_exc())
+                
+                # Cleanup on error
+                for p in (p2, p1):
+                    if p and p != image_path and os.path.exists(p):
+                        try:
+                            os.remove(p)
+                        except:
+                            pass
+                gc.collect()
 
-            current_memory = process.memory_info().rss / (1024 * 1024)
-            peak_memory = max(peak_memory, current_memory)
+        final_memory = process.memory_info().rss / (1024 * 1024)
+        memory_used = final_memory - initial_memory
 
-            st.session_state['processed_files'].append(uploaded_file.name)
-            progress_bar.progress((idx + 1) / total_files)
-            progress_label.text(f"{idx + 1}/{total_files} complete")
+        status_text.markdown(f"**✅ Complete! {len(st.session_state['summary_records'])}/{total_files} processed**")
 
-        except Exception as e:
-            st.error(f"Error processing {uploaded_file.name}: {e}")
-            for p in (local_path, tmp_path):
-                if p and os.path.exists(p):
-                    try:
-                        os.remove(p)
-                    except:
-                        pass
-            if s3_key:
-                try:
-                    delete_from_s3(S3_BUCKET, s3_key)
-                except:
-                    pass
-            gc.collect()
+        st.markdown("### 📊 Memory Usage")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Peak RAM", f"{peak_memory:.1f} MB")
+        with col2:
+            st.metric("Final RAM", f"{final_memory:.1f} MB")
+        with col3:
+            st.metric("RAM Increase", f"{memory_used:.1f} MB")
 
-    final_memory = process.memory_info().rss / (1024 * 1024)
-    memory_used = final_memory - initial_memory
+        st.markdown("### Annotated Images")
+        for idx, ap in enumerate(st.session_state.get('annotated_paths', [])):
+            try:
+                # Get corresponding filename from summary records
+                if idx < len(st.session_state['summary_records']):
+                    filename = st.session_state['summary_records'][idx]['image_name']
+                else:
+                    filename = f"Image {idx + 1}"
+                
+                st.image(cv2.cvtColor(cv2.imread(ap), cv2.COLOR_BGR2RGB))
+                st.markdown(f"<p style='text-align: center; color: gray; font-size: 12px; margin-top: -15px;'>Image: {filename}</p>", unsafe_allow_html=True)
+            except:
+                st.image(ap)
+                if idx < len(st.session_state['summary_records']):
+                    filename = st.session_state['summary_records'][idx]['image_name']
+                    st.markdown(f"<p style='text-align: center; color: gray; font-size: 12px; margin-top: -15px;'>Image: {filename}</p>", unsafe_allow_html=True)
 
-    status_text.markdown(f"**✅ Complete! {len(st.session_state['processed_files'])}/{total_files} processed**")
-
-    st.markdown("### 📊 Memory Usage")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Peak RAM", f"{peak_memory:.1f} MB")
-    with col2:
-        st.metric("Final RAM", f"{final_memory:.1f} MB")
-    with col3:
-        st.metric("RAM Increase", f"{memory_used:.1f} MB")
-
-    st.markdown("### Annotated Images")
-    for ap in st.session_state.get('annotated_paths', []):
-        try:
-            st.image(cv2.cvtColor(cv2.imread(ap), cv2.COLOR_BGR2RGB))
-        except:
-            st.image(ap)
-
-    folder_summary_records = compute_unique_counts(
-        st.session_state['grouped_coords'],
-        st.session_state['max_counts']
-    )
-    display_and_download_summary(
-        st.session_state['summary_records'],
-        folder_summary_records,
-        st.session_state['all_detections_records']
-    )
+        folder_summary_records = compute_unique_counts(
+            st.session_state['grouped_coords'],
+            st.session_state['max_counts']
+        )
+        display_and_download_summary(
+            st.session_state['summary_records'],
+            folder_summary_records,
+            st.session_state['all_detections_records']
+        )
+elif folder_path:
+    st.error("Invalid folder path")
