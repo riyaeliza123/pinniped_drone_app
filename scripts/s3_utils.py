@@ -9,11 +9,11 @@ def get_s3_client():
         import streamlit as st
         aws_access_key = st.secrets.get("AWS_ACCESS_KEY_ID")
         aws_secret_key = st.secrets.get("AWS_SECRET_ACCESS_KEY")
-        aws_region = st.secrets.get("AWS_REGION", "us-east-1")
+        aws_region = st.secrets.get("AWS_REGION", "us-west-1")
     except:
         aws_access_key = os.getenv("AWS_ACCESS_KEY_ID")
         aws_secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-        aws_region = os.getenv("AWS_REGION", "us-east-1")
+        aws_region = os.getenv("AWS_REGION", "us-west-1")
     
     return boto3.client(
         's3',

@@ -57,9 +57,7 @@ if uploaded_files:
     progress_label = st.empty()
     status_text = st.empty()
 
-    # Process one file at a time immediately
     for idx, uploaded_file in enumerate(uploaded_files):
-        # Skip if already processed (prevents reprocessing on reruns)
         if uploaded_file.name in st.session_state['processed_files']:
             continue
 
@@ -70,10 +68,9 @@ if uploaded_files:
         try:
             status_text.markdown(f"**Processing {idx + 1}/{total_files}**: {uploaded_file.name}")
 
-            # Write to disk and immediately free memory
+            # Write to disk in chunks
             tmp_path = os.path.join(out_dir, f"tmp_{idx}_{uploaded_file.name}")
             with open(tmp_path, 'wb') as f:
-                # Read in chunks to avoid loading entire file in memory
                 while True:
                     chunk = uploaded_file.read(8192)
                     if not chunk:
@@ -91,12 +88,13 @@ if uploaded_files:
                 st.session_state['processed_files'].append(uploaded_file.name)
                 continue
 
-            # Resize and upload to S3
+            # Resize for Roboflow limits
             p1, s1 = limit_resolution_to_temp(tmp_path)
             p2, s2 = progressive_resize_to_temp(p1)
             final_path = p2 or p1 or tmp_path
             scale = (s1 * s2) if p2 else (s1 if p1 else 1.0)
 
+            # Upload to S3
             with open(final_path, 'rb') as f:
                 resized_bytes = f.read()
             
@@ -109,14 +107,15 @@ if uploaded_files:
                     os.remove(p)
             gc.collect()
 
-            # Generate presigned URL and run detection
+            # Generate presigned URL for Roboflow
             s3_url = generate_presigned_url(S3_BUCKET, s3_key, expiration=600)
             location = get_location_name(lat)
             group_key = (location, date)
 
+            # Run detection from S3
             detections = run_detection_from_url(s3_url, conf_threshold, overlap_threshold)
 
-            # Download for annotation only
+            # Download for annotation
             local_path = os.path.join(out_dir, f"ann_{idx}.jpg")
             download_from_s3(S3_BUCKET, s3_key, local_path)
 
@@ -138,6 +137,7 @@ if uploaded_files:
             cv2.imwrite(ann_path, labeled)
             st.session_state['annotated_paths'].append(ann_path)
 
+            # Scale boxes back to original coordinates
             scaled_boxes = [[b[0]*scale, b[1]*scale, b[2]*scale, b[3]*scale] for b in detections.xyxy]
 
             for seal_idx, (box, conf) in enumerate(zip(scaled_boxes, detections.confidence), start=1):
@@ -209,6 +209,15 @@ if uploaded_files:
 
     status_text.markdown(f"**✅ Complete! {len(st.session_state['processed_files'])}/{total_files} processed**")
 
+    st.markdown("### 📊 Memory Usage")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Peak RAM", f"{peak_memory:.1f} MB")
+    with col2:
+        st.metric("Final RAM", f"{final_memory:.1f} MB")
+    with col3:
+        st.metric("RAM Increase", f"{memory_used:.1f} MB")
+
     st.markdown("### Annotated Images")
     for ap in st.session_state.get('annotated_paths', []):
         try:
@@ -225,11 +234,3 @@ if uploaded_files:
         folder_summary_records,
         st.session_state['all_detections_records']
     )
-    st.markdown("### 📊 Memory Usage")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Peak RAM", f"{peak_memory:.1f} MB")
-    with col2:
-        st.metric("Final RAM", f"{final_memory:.1f} MB")
-    with col3:
-        st.metric("RAM Increase", f"{memory_used:.1f} MB")
