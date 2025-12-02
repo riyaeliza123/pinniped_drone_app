@@ -31,4 +31,7 @@ ENV/
 
 # Test images cache
 test images/.cache/
+<<<<<<< HEAD
 .streamlit/secrets.toml
+=======
+>>>>>>> 63c828a4dc9aefaa13635e493499c2bc297b9ede

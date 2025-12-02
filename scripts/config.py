@@ -25,4 +25,14 @@ try:
     project = rf.workspace().project(PROJECT_NAME)
     model = project.version(MODEL_VERSION).model
 except Exception as e:
+<<<<<<< HEAD
     st.error(f"Roboflow error: {e}")
+=======
+    st.error(f"Roboflow error: {e}")
+
+
+# API_KEY = st.secrets["ROBOWFLOW_API_KEY"]
+# rf = Roboflow(api_key=API_KEY)
+# project = rf.workspace().project(PROJECT_NAME)
+# model = project.version(MODEL_VERSION).model
+>>>>>>> 63c828a4dc9aefaa13635e493499c2bc297b9ede
