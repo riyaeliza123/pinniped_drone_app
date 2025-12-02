@@ -10,16 +10,30 @@ import inspect
 import psutil
 from collections import defaultdict
 from math import cos, radians
-from pathlib import Path
 import requests
 import zipfile
-import shutil
+import io
 
 from scripts.detection import run_detection_from_local
 from scripts.exif_utils import extract_gps_from_image, get_capture_date_time, get_location_name
 from scripts.image_utils import limit_resolution_to_temp, progressive_resize_to_temp, compute_gsd
 from scripts.clustering import compute_unique_counts
 from scripts.summaries import display_and_download_summary
+from scripts.s3_utils import (
+    upload_to_s3_direct, 
+    download_from_s3, 
+    list_s3_files,
+    delete_s3_folder
+)
+
+# Get S3 bucket name
+try:
+    S3_BUCKET = st.secrets["S3_BUCKET_NAME"]
+except:
+    S3_BUCKET = os.getenv("S3_BUCKET_NAME")
+    if not S3_BUCKET:
+        st.error("S3_BUCKET_NAME not configured. Please add it to .streamlit/secrets.toml")
+        st.stop()
 
 st.title("Pinniped Detection from Drone Imagery")
 
@@ -27,131 +41,131 @@ st.markdown("### ⚙️ Detection Thresholds")
 conf_threshold = st.slider("Confidence threshold (%)", 0, 100, 15, step=5)
 overlap_threshold = st.slider("Overlap / NMS threshold (%)", 0, 100, 30, step=5)
 
-st.markdown("### 📁 Select Images")
+st.markdown("### 📦 Dropbox ZIP Link")
+st.info("""
+**How to share via Dropbox:**
+1. Upload your images folder as a ZIP file to Dropbox
+2. Right-click the ZIP → Share → Copy link
+3. Paste the link below
 
-# Create tabs for different input methods
-tab1, tab2 = st.tabs(["📦 Dropbox ZIP Link", "📂 Local Folder (local only)"])
+**Note:** The ZIP will be downloaded to S3, extracted, and processed from there.
+""")
 
-with tab1:
-    st.info("""
-    **How to share via Dropbox:**
-    1. Upload your images folder as a ZIP file to Dropbox
-    2. Right-click the ZIP → Share → Copy link
-    3. Paste the link below
-    
-    **Note:** The ZIP file will be downloaded and extracted. Large files may take time.
-    """)
-    
-    dropbox_url = st.text_input("Dropbox ZIP file link:", value="")
-    
-    if dropbox_url:
-        # Convert Dropbox share link to direct download link
-        if 'dropbox.com' in dropbox_url:
-            # Change dl=0 to dl=1 for direct download
-            direct_url = dropbox_url.replace('dl=0', 'dl=1').replace('www.dropbox.com', 'dl.dropboxusercontent.com')
-            use_dropbox = True
-        else:
-            st.error("Please provide a valid Dropbox link")
-            use_dropbox = False
-    else:
-        use_dropbox = False
+dropbox_url = st.text_input("Dropbox ZIP file link:", value="")
 
-with tab2:
-    st.warning("⚠️ This only works when running locally, not on Streamlit Cloud")
-    folder_path = st.text_input("Enter folder path:", value="")
-    use_local = folder_path and os.path.isdir(folder_path)
+if not dropbox_url:
+    st.info("👆 Enter a Dropbox ZIP link to begin")
+    st.stop()
 
-# Process based on input method
+# Convert Dropbox share link to direct download link
+if 'dropbox.com' not in dropbox_url:
+    st.error("Please provide a valid Dropbox link")
+    st.stop()
+
+direct_url = dropbox_url.replace('dl=0', 'dl=1').replace('www.dropbox.com', 'dl.dropboxusercontent.com')
+
+# Process Dropbox ZIP
 image_files = []
+s3_folder_key = None
 
-if use_dropbox:
-    if st.button("Download and Process from Dropbox"):
-        with st.spinner("Downloading ZIP file from Dropbox..."):
-            try:
-                # Create temp directory for extraction
-                extract_dir = tempfile.mkdtemp()
-                zip_path = os.path.join(extract_dir, "images.zip")
+if st.button("Download and Process from Dropbox"):
+    with st.spinner("Downloading ZIP file from Dropbox..."):
+        try:
+            import uuid
+            session_id = uuid.uuid4().hex
+            s3_folder_key = f"dropbox_extracts/{session_id}/"
+            
+            # Download ZIP file in chunks
+            response = requests.get(direct_url, stream=True, timeout=60)
+            response.raise_for_status()
+            
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
+            
+            download_progress = st.progress(0)
+            download_status = st.empty()
+            
+            # Download to memory
+            zip_bytes = io.BytesIO()
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    zip_bytes.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        progress = downloaded / total_size
+                        download_progress.progress(progress)
+                        download_status.text(f"Downloaded: {downloaded / (1024*1024):.1f} MB / {total_size / (1024*1024):.1f} MB")
+            
+            download_status.text("Download complete! Uploading to S3 and extracting...")
+            
+            # Reset BytesIO position
+            zip_bytes.seek(0)
+            
+            # Extract and upload each file to S3
+            extract_count = 0
+            with zipfile.ZipFile(zip_bytes, 'r') as zip_ref:
+                file_list = zip_ref.namelist()
+                extract_progress = st.progress(0)
+                extract_status = st.empty()
                 
-                # Download ZIP file
-                response = requests.get(direct_url, stream=True, timeout=60)
-                response.raise_for_status()
-                
-                total_size = int(response.headers.get('content-length', 0))
-                downloaded = 0
-                
-                download_progress = st.progress(0)
-                download_status = st.empty()
-                
-                with open(zip_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            if total_size > 0:
-                                progress = downloaded / total_size
-                                download_progress.progress(progress)
-                                download_status.text(f"Downloaded: {downloaded / (1024*1024):.1f} MB / {total_size / (1024*1024):.1f} MB")
-                
-                download_status.text("Download complete! Extracting...")
-                
-                # Extract ZIP file
-                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    zip_ref.extractall(extract_dir)
-                
-                # Remove the ZIP file to save space
-                os.remove(zip_path)
-                
-                # Find all image files in extracted directory
-                for ext in ['*.jpg', '*.jpeg', '*.png', '*.JPG', '*.JPEG', '*.PNG']:
-                    image_files.extend(Path(extract_dir).rglob(ext))
-                
-                image_files = list(set(str(f) for f in image_files))
-                
-                download_status.empty()
-                download_progress.empty()
-                
-                if not image_files:
-                    st.error("No images found in ZIP file")
-                    shutil.rmtree(extract_dir)
-                    st.stop()
-                
-                st.success(f"Found {len(image_files)} images in ZIP file")
-                
-                # Store extract_dir in session state for cleanup
-                st.session_state['extract_dir'] = extract_dir
-                
-            except requests.RequestException as e:
-                st.error(f"Failed to download from Dropbox: {e}")
-                st.info("Make sure the link is a direct download link (ends with dl=1)")
+                for idx, file_name in enumerate(file_list):
+                    # Skip directories and hidden files
+                    if file_name.endswith('/') or '/__MACOSX/' in file_name or file_name.startswith('.'):
+                        continue
+                    
+                    # Only process image files
+                    if not any(file_name.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png']):
+                        continue
+                    
+                    extract_status.text(f"Extracting: {file_name}")
+                    
+                    # Read file from ZIP
+                    file_data = zip_ref.read(file_name)
+                    
+                    # Upload to S3
+                    s3_key = f"{s3_folder_key}{os.path.basename(file_name)}"
+                    upload_to_s3_direct(file_data, S3_BUCKET, s3_key)
+                    extract_count += 1
+                    
+                    extract_progress.progress((idx + 1) / len(file_list))
+            
+            extract_status.empty()
+            extract_progress.empty()
+            download_status.empty()
+            download_progress.empty()
+            
+            if extract_count == 0:
+                st.error("No images found in ZIP file")
+                delete_s3_folder(S3_BUCKET, s3_folder_key)
                 st.stop()
-            except zipfile.BadZipFile:
-                st.error("Downloaded file is not a valid ZIP file")
-                st.stop()
-            except Exception as e:
-                st.error(f"Error: {e}")
-                import traceback
-                st.text(traceback.format_exc())
-                st.stop()
-    else:
-        st.stop()
-
-elif use_local:
-    image_files = []
-    for ext in ['*.jpg', '*.jpeg', '*.png', '*.JPG', '*.JPEG', '*.PNG']:
-        image_files.extend(Path(folder_path).glob(ext))
-    
-    image_files = list(set(str(f) for f in image_files))
-    
-    if not image_files:
-        st.warning("No images found in folder.")
-        st.stop()
-    
-    st.success(f"Found {len(image_files)} images")
-    
-    if not st.button("Process Images"):
-        st.stop()
+            
+            # List all uploaded files from S3
+            image_files = list_s3_files(S3_BUCKET, s3_folder_key)
+            
+            st.success(f"Found {len(image_files)} images uploaded to S3")
+            
+            # Store S3 folder key in session state for cleanup
+            st.session_state['s3_folder_key'] = s3_folder_key
+            
+        except requests.RequestException as e:
+            st.error(f"Failed to download from Dropbox: {e}")
+            st.info("Make sure the link is a direct download link (ends with dl=1)")
+            if s3_folder_key:
+                delete_s3_folder(S3_BUCKET, s3_folder_key)
+            st.stop()
+        except zipfile.BadZipFile:
+            st.error("Downloaded file is not a valid ZIP file")
+            if s3_folder_key:
+                delete_s3_folder(S3_BUCKET, s3_folder_key)
+            st.stop()
+        except Exception as e:
+            st.error(f"Error: {e}")
+            import traceback
+            st.text(traceback.format_exc())
+            if s3_folder_key:
+                delete_s3_folder(S3_BUCKET, s3_folder_key)
+            st.stop()
 else:
-    st.info("👆 Select an input method above")
     st.stop()
 
 # Processing logic
@@ -175,12 +189,21 @@ if image_files:
     progress_label = st.empty()
     status_text = st.empty()
 
-    for idx, image_path in enumerate(image_files):
+    for idx, image_source in enumerate(image_files):
         p1 = None
         p2 = None
+        tmp_path = None
         
         try:
-            filename = os.path.basename(image_path)
+            # Download from S3
+            filename = os.path.basename(image_source)
+            tmp_path = os.path.join(out_dir, f"s3_{idx}_{filename}")
+            
+            status_text.markdown(f"**Downloading {idx + 1}/{total_files}**: {filename}")
+            download_from_s3(S3_BUCKET, image_source, tmp_path)
+            
+            image_path = tmp_path
+            
             status_text.markdown(f"**Processing {idx + 1}/{total_files}**: {filename}")
 
             # Extract EXIF
@@ -189,6 +212,8 @@ if image_files:
 
             if lat is None or lon is None:
                 st.warning(f"No GPS in {filename}. Skipped.")
+                if tmp_path and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
                 continue
 
             # Resize for Roboflow limits
@@ -205,8 +230,8 @@ if image_files:
             if img is None:
                 raise RuntimeError(f"Could not read {filename}")
 
-            # NOW cleanup resize temps (after reading)
-            for p in (p2, p1):
+            # NOW cleanup resize temps and downloaded file (after reading)
+            for p in (p2, p1, tmp_path):
                 if p and p != image_path and os.path.exists(p):
                     try:
                         os.remove(p)
@@ -277,13 +302,13 @@ if image_files:
             progress_label.text(f"{idx + 1}/{total_files} complete")
 
         except Exception as e:
-            st.error(f"Error processing {filename}: {e}")
+            st.error(f"Error processing {filename if 'filename' in locals() else 'image'}: {e}")
             import traceback
             st.text(traceback.format_exc())
             
             # Cleanup on error
-            for p in (p2, p1):
-                if p and p != image_path and os.path.exists(p):
+            for p in (p2, p1, tmp_path):
+                if p and os.path.exists(p):
                     try:
                         os.remove(p)
                     except:
@@ -295,13 +320,14 @@ if image_files:
 
     status_text.markdown(f"**✅ Complete! {len(st.session_state['summary_records'])}/{total_files} processed**")
 
-    # Cleanup extracted directory if it exists
-    if 'extract_dir' in st.session_state and os.path.exists(st.session_state['extract_dir']):
+    # Cleanup S3 folder if it exists
+    if 's3_folder_key' in st.session_state:
         try:
-            shutil.rmtree(st.session_state['extract_dir'])
-            del st.session_state['extract_dir']
-        except:
-            pass
+            with st.spinner("Cleaning up S3..."):
+                delete_s3_folder(S3_BUCKET, st.session_state['s3_folder_key'])
+            del st.session_state['s3_folder_key']
+        except Exception as e:
+            st.warning(f"Could not cleanup S3: {e}")
 
     st.markdown("### 📊 Memory Usage")
     col1, col2, col3 = st.columns(3)
