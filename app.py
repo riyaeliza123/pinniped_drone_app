@@ -11,6 +11,9 @@ import psutil
 from collections import defaultdict
 from math import cos, radians
 from pathlib import Path
+import requests
+import zipfile
+import shutil
 
 from scripts.detection import run_detection_from_local
 from scripts.exif_utils import extract_gps_from_image, get_capture_date_time, get_location_name
@@ -25,14 +28,118 @@ conf_threshold = st.slider("Confidence threshold (%)", 0, 100, 15, step=5)
 overlap_threshold = st.slider("Overlap / NMS threshold (%)", 0, 100, 30, step=5)
 
 st.markdown("### 📁 Select Images")
-folder_path = st.text_input("Enter folder path with drone images:", value="")
 
-if folder_path and os.path.isdir(folder_path):
+# Create tabs for different input methods
+tab1, tab2 = st.tabs(["📦 Dropbox ZIP Link", "📂 Local Folder (local only)"])
+
+with tab1:
+    st.info("""
+    **How to share via Dropbox:**
+    1. Upload your images folder as a ZIP file to Dropbox
+    2. Right-click the ZIP → Share → Copy link
+    3. Paste the link below
+    
+    **Note:** The ZIP file will be downloaded and extracted. Large files may take time.
+    """)
+    
+    dropbox_url = st.text_input("Dropbox ZIP file link:", value="")
+    
+    if dropbox_url:
+        # Convert Dropbox share link to direct download link
+        if 'dropbox.com' in dropbox_url:
+            # Change dl=0 to dl=1 for direct download
+            direct_url = dropbox_url.replace('dl=0', 'dl=1').replace('www.dropbox.com', 'dl.dropboxusercontent.com')
+            use_dropbox = True
+        else:
+            st.error("Please provide a valid Dropbox link")
+            use_dropbox = False
+    else:
+        use_dropbox = False
+
+with tab2:
+    st.warning("⚠️ This only works when running locally, not on Streamlit Cloud")
+    folder_path = st.text_input("Enter folder path:", value="")
+    use_local = folder_path and os.path.isdir(folder_path)
+
+# Process based on input method
+image_files = []
+
+if use_dropbox:
+    if st.button("Download and Process from Dropbox"):
+        with st.spinner("Downloading ZIP file from Dropbox..."):
+            try:
+                # Create temp directory for extraction
+                extract_dir = tempfile.mkdtemp()
+                zip_path = os.path.join(extract_dir, "images.zip")
+                
+                # Download ZIP file
+                response = requests.get(direct_url, stream=True, timeout=60)
+                response.raise_for_status()
+                
+                total_size = int(response.headers.get('content-length', 0))
+                downloaded = 0
+                
+                download_progress = st.progress(0)
+                download_status = st.empty()
+                
+                with open(zip_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total_size > 0:
+                                progress = downloaded / total_size
+                                download_progress.progress(progress)
+                                download_status.text(f"Downloaded: {downloaded / (1024*1024):.1f} MB / {total_size / (1024*1024):.1f} MB")
+                
+                download_status.text("Download complete! Extracting...")
+                
+                # Extract ZIP file
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(extract_dir)
+                
+                # Remove the ZIP file to save space
+                os.remove(zip_path)
+                
+                # Find all image files in extracted directory
+                for ext in ['*.jpg', '*.jpeg', '*.png', '*.JPG', '*.JPEG', '*.PNG']:
+                    image_files.extend(Path(extract_dir).rglob(ext))
+                
+                image_files = list(set(str(f) for f in image_files))
+                
+                download_status.empty()
+                download_progress.empty()
+                
+                if not image_files:
+                    st.error("No images found in ZIP file")
+                    shutil.rmtree(extract_dir)
+                    st.stop()
+                
+                st.success(f"Found {len(image_files)} images in ZIP file")
+                
+                # Store extract_dir in session state for cleanup
+                st.session_state['extract_dir'] = extract_dir
+                
+            except requests.RequestException as e:
+                st.error(f"Failed to download from Dropbox: {e}")
+                st.info("Make sure the link is a direct download link (ends with dl=1)")
+                st.stop()
+            except zipfile.BadZipFile:
+                st.error("Downloaded file is not a valid ZIP file")
+                st.stop()
+            except Exception as e:
+                st.error(f"Error: {e}")
+                import traceback
+                st.text(traceback.format_exc())
+                st.stop()
+    else:
+        st.stop()
+
+elif use_local:
     image_files = []
     for ext in ['*.jpg', '*.jpeg', '*.png', '*.JPG', '*.JPEG', '*.PNG']:
         image_files.extend(Path(folder_path).glob(ext))
     
-    # Remove duplicates (case-insensitive file systems return same file twice)
     image_files = list(set(str(f) for f in image_files))
     
     if not image_files:
@@ -41,180 +148,192 @@ if folder_path and os.path.isdir(folder_path):
     
     st.success(f"Found {len(image_files)} images")
     
-    if st.button("Process Images"):
-        process = psutil.Process()
-        initial_memory = process.memory_info().rss / (1024 * 1024)
-        peak_memory = initial_memory
+    if not st.button("Process Images"):
+        st.stop()
+else:
+    st.info("👆 Select an input method above")
+    st.stop()
+
+# Processing logic
+if image_files:
+    process = psutil.Process()
+    initial_memory = process.memory_info().rss / (1024 * 1024)
+    peak_memory = initial_memory
+    
+    if 'out_dir' not in st.session_state:
+        st.session_state['out_dir'] = tempfile.mkdtemp()
+    out_dir = st.session_state['out_dir']
+
+    st.session_state['annotated_paths'] = []
+    st.session_state['all_detections_records'] = []
+    st.session_state['summary_records'] = []
+    st.session_state['grouped_coords'] = defaultdict(list)
+    st.session_state['max_counts'] = defaultdict(int)
+
+    total_files = len(image_files)
+    progress_bar = st.progress(0)
+    progress_label = st.empty()
+    status_text = st.empty()
+
+    for idx, image_path in enumerate(image_files):
+        p1 = None
+        p2 = None
         
-        if 'out_dir' not in st.session_state:
-            st.session_state['out_dir'] = tempfile.mkdtemp()
-        out_dir = st.session_state['out_dir']
+        try:
+            filename = os.path.basename(image_path)
+            status_text.markdown(f"**Processing {idx + 1}/{total_files}**: {filename}")
 
-        st.session_state['annotated_paths'] = []
-        st.session_state['all_detections_records'] = []
-        st.session_state['summary_records'] = []
-        st.session_state['grouped_coords'] = defaultdict(list)
-        st.session_state['max_counts'] = defaultdict(int)
+            # Extract EXIF
+            lat, lon = extract_gps_from_image(image_path)
+            date, time = get_capture_date_time(image_path)
 
-        total_files = len(image_files)
-        progress_bar = st.progress(0)
-        progress_label = st.empty()
-        status_text = st.empty()
+            if lat is None or lon is None:
+                st.warning(f"No GPS in {filename}. Skipped.")
+                continue
 
-        for idx, image_path in enumerate(image_files):
-            p1 = None
-            p2 = None
-            
-            try:
-                filename = os.path.basename(image_path)
-                status_text.markdown(f"**Processing {idx + 1}/{total_files}**: {filename}")
+            # Resize for Roboflow limits
+            p1, s1 = limit_resolution_to_temp(image_path)
+            p2, s2 = progressive_resize_to_temp(p1)
+            final_path = p2 or p1 or image_path
+            scale = (s1 * s2) if p2 else (s1 if p1 else 1.0)
 
-                # Extract EXIF
-                lat, lon = extract_gps_from_image(image_path)
-                date, time = get_capture_date_time(image_path)
+            # Run detection from local file
+            detections = run_detection_from_local(final_path, conf_threshold, overlap_threshold)
 
-                if lat is None or lon is None:
-                    st.warning(f"No GPS in {filename}. Skipped.")
-                    continue
+            # Read for annotation BEFORE cleanup
+            img = cv2.imread(final_path)
+            if img is None:
+                raise RuntimeError(f"Could not read {filename}")
 
-                # Resize for Roboflow limits
-                p1, s1 = limit_resolution_to_temp(image_path)
-                p2, s2 = progressive_resize_to_temp(p1)
-                final_path = p2 or p1 or image_path
-                scale = (s1 * s2) if p2 else (s1 if p1 else 1.0)
+            # NOW cleanup resize temps (after reading)
+            for p in (p2, p1):
+                if p and p != image_path and os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except:
+                        pass
 
-                # Run detection from local file
-                detections = run_detection_from_local(final_path, conf_threshold, overlap_threshold)
+            gsd = compute_gsd({}, img.shape[1])
 
-                # Read for annotation BEFORE cleanup
-                img = cv2.imread(final_path)
-                if img is None:
-                    raise RuntimeError(f"Could not read {filename}")
+            annotator = sv.BoxAnnotator()
+            texts = [f"seal {c*100:.1f}%" for c in detections.confidence]
+            labeled = annotator.annotate(scene=img.copy(), detections=detections, labels=texts) \
+                if "labels" in inspect.signature(annotator.annotate).parameters \
+                else annotator.annotate(scene=img.copy(), detections=detections)
 
-                # NOW cleanup resize temps (after reading)
-                for p in (p2, p1):
-                    if p and p != image_path and os.path.exists(p):
-                        try:
-                            os.remove(p)
-                        except:
-                            pass
+            ann_tmp = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
+            ann_path = ann_tmp.name
+            ann_tmp.close()
+            cv2.imwrite(ann_path, labeled)
+            st.session_state['annotated_paths'].append(ann_path)
 
-                gsd = compute_gsd({}, img.shape[1])
+            # Scale boxes back to original coordinates
+            scaled_boxes = [[b[0]*scale, b[1]*scale, b[2]*scale, b[3]*scale] for b in detections.xyxy]
 
-                annotator = sv.BoxAnnotator()
-                texts = [f"seal {c*100:.1f}%" for c in detections.confidence]
-                labeled = annotator.annotate(scene=img.copy(), detections=detections, labels=texts) \
-                    if "labels" in inspect.signature(annotator.annotate).parameters \
-                    else annotator.annotate(scene=img.copy(), detections=detections)
-
-                ann_tmp = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
-                ann_path = ann_tmp.name
-                ann_tmp.close()
-                cv2.imwrite(ann_path, labeled)
-                st.session_state['annotated_paths'].append(ann_path)
-
-                # Scale boxes back to original coordinates
-                scaled_boxes = [[b[0]*scale, b[1]*scale, b[2]*scale, b[3]*scale] for b in detections.xyxy]
-
-                for seal_idx, (box, conf) in enumerate(zip(scaled_boxes, detections.confidence), start=1):
-                    st.session_state['all_detections_records'].append({
-                        "image_name": filename,
-                        "seal_id": seal_idx,
-                        "x_min": float(box[0]),
-                        "y_min": float(box[1]),
-                        "x_max": float(box[2]),
-                        "y_max": float(box[3]),
-                        "confidence": float(conf)
-                    })
-
-                location = get_location_name(lat)
-                group_key = (location, date)
-
-                for box in detections.xyxy:
-                    xc = (box[0] + box[2]) / 2
-                    yc = (box[1] + box[3]) / 2
-                    dx_m = (xc - img.shape[1] / 2) * gsd
-                    dy_m = (yc - img.shape[0] / 2) * gsd
-                    lat_off = dy_m / 111320
-                    lon_off = dx_m / (111320 * cos(radians(lat)))
-                    st.session_state['grouped_coords'][group_key].append((lat + lat_off, lon + lon_off))
-
-                st.session_state['summary_records'].append({
+            for seal_idx, (box, conf) in enumerate(zip(scaled_boxes, detections.confidence), start=1):
+                st.session_state['all_detections_records'].append({
                     "image_name": filename,
-                    "pinniped_count": len(scaled_boxes),
-                    "latitude": lat,
-                    "longitude": lon,
-                    "location": location,
-                    "date": date,
-                    "time": time
+                    "seal_id": seal_idx,
+                    "x_min": float(box[0]),
+                    "y_min": float(box[1]),
+                    "x_max": float(box[2]),
+                    "y_max": float(box[3]),
+                    "confidence": float(conf)
                 })
 
-                key = (location, date)
-                current_max = st.session_state['max_counts'].get(key, 0)
-                st.session_state['max_counts'][key] = max(current_max, len(scaled_boxes))
+            location = get_location_name(lat)
+            group_key = (location, date)
 
-                del img, labeled
-                gc.collect()
+            for box in detections.xyxy:
+                xc = (box[0] + box[2]) / 2
+                yc = (box[1] + box[3]) / 2
+                dx_m = (xc - img.shape[1] / 2) * gsd
+                dy_m = (yc - img.shape[0] / 2) * gsd
+                lat_off = dy_m / 111320
+                lon_off = dx_m / (111320 * cos(radians(lat)))
+                st.session_state['grouped_coords'][group_key].append((lat + lat_off, lon + lon_off))
 
-                current_memory = process.memory_info().rss / (1024 * 1024)
-                peak_memory = max(peak_memory, current_memory)
+            st.session_state['summary_records'].append({
+                "image_name": filename,
+                "pinniped_count": len(scaled_boxes),
+                "latitude": lat,
+                "longitude": lon,
+                "location": location,
+                "date": date,
+                "time": time
+            })
 
-                progress_bar.progress((idx + 1) / total_files)
-                progress_label.text(f"{idx + 1}/{total_files} complete")
+            key = (location, date)
+            current_max = st.session_state['max_counts'].get(key, 0)
+            st.session_state['max_counts'][key] = max(current_max, len(scaled_boxes))
 
-            except Exception as e:
-                st.error(f"Error processing {filename}: {e}")
-                import traceback
-                st.text(traceback.format_exc())
-                
-                # Cleanup on error
-                for p in (p2, p1):
-                    if p and p != image_path and os.path.exists(p):
-                        try:
-                            os.remove(p)
-                        except:
-                            pass
-                gc.collect()
+            del img, labeled
+            gc.collect()
 
-        final_memory = process.memory_info().rss / (1024 * 1024)
-        memory_used = final_memory - initial_memory
+            current_memory = process.memory_info().rss / (1024 * 1024)
+            peak_memory = max(peak_memory, current_memory)
 
-        status_text.markdown(f"**✅ Complete! {len(st.session_state['summary_records'])}/{total_files} processed**")
+            progress_bar.progress((idx + 1) / total_files)
+            progress_label.text(f"{idx + 1}/{total_files} complete")
 
-        st.markdown("### 📊 Memory Usage")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Peak RAM", f"{peak_memory:.1f} MB")
-        with col2:
-            st.metric("Final RAM", f"{final_memory:.1f} MB")
-        with col3:
-            st.metric("RAM Increase", f"{memory_used:.1f} MB")
+        except Exception as e:
+            st.error(f"Error processing {filename}: {e}")
+            import traceback
+            st.text(traceback.format_exc())
+            
+            # Cleanup on error
+            for p in (p2, p1):
+                if p and p != image_path and os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except:
+                        pass
+            gc.collect()
 
-        st.markdown("### Annotated Images")
-        for idx, ap in enumerate(st.session_state.get('annotated_paths', [])):
-            try:
-                # Get corresponding filename from summary records
-                if idx < len(st.session_state['summary_records']):
-                    filename = st.session_state['summary_records'][idx]['image_name']
-                else:
-                    filename = f"Image {idx + 1}"
-                
-                st.image(cv2.cvtColor(cv2.imread(ap), cv2.COLOR_BGR2RGB))
-                st.markdown(f"<p style='text-align: center; color: gray; font-size: 12px; margin-top: -15px;'>Image: {filename}</p>", unsafe_allow_html=True)
-            except:
-                st.image(ap)
-                if idx < len(st.session_state['summary_records']):
-                    filename = st.session_state['summary_records'][idx]['image_name']
-                    st.markdown(f"<p style='text-align: center; color: gray; font-size: 12px; margin-top: -15px;'>Image: {filename}</p>", unsafe_allow_html=True)
+    final_memory = process.memory_info().rss / (1024 * 1024)
+    memory_used = final_memory - initial_memory
 
-        folder_summary_records = compute_unique_counts(
-            st.session_state['grouped_coords'],
-            st.session_state['max_counts']
-        )
-        display_and_download_summary(
-            st.session_state['summary_records'],
-            folder_summary_records,
-            st.session_state['all_detections_records']
-        )
-elif folder_path:
-    st.error("Invalid folder path")
+    status_text.markdown(f"**✅ Complete! {len(st.session_state['summary_records'])}/{total_files} processed**")
+
+    # Cleanup extracted directory if it exists
+    if 'extract_dir' in st.session_state and os.path.exists(st.session_state['extract_dir']):
+        try:
+            shutil.rmtree(st.session_state['extract_dir'])
+            del st.session_state['extract_dir']
+        except:
+            pass
+
+    st.markdown("### 📊 Memory Usage")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Peak RAM", f"{peak_memory:.1f} MB")
+    with col2:
+        st.metric("Final RAM", f"{final_memory:.1f} MB")
+    with col3:
+        st.metric("RAM Increase", f"{memory_used:.1f} MB")
+
+    st.markdown("### 📷 Annotated Images")
+    for idx, ap in enumerate(st.session_state.get('annotated_paths', [])):
+        try:
+            if idx < len(st.session_state['summary_records']):
+                filename = st.session_state['summary_records'][idx]['image_name']
+            else:
+                filename = f"Image {idx + 1}"
+            
+            st.image(cv2.cvtColor(cv2.imread(ap), cv2.COLOR_BGR2RGB))
+            st.markdown(f"<p style='text-align: center; color: gray; font-size: 12px; margin-top: -15px;'>Img: {filename}</p>", unsafe_allow_html=True)
+        except:
+            st.image(ap)
+            if idx < len(st.session_state['summary_records']):
+                filename = st.session_state['summary_records'][idx]['image_name']
+                st.markdown(f"<p style='text-align: center; color: gray; font-size: 12px; margin-top: -15px;'>Img: {filename}</p>", unsafe_allow_html=True)
+
+    folder_summary_records = compute_unique_counts(
+        st.session_state['grouped_coords'],
+        st.session_state['max_counts']
+    )
+    display_and_download_summary(
+        st.session_state['summary_records'],
+        folder_summary_records,
+        st.session_state['all_detections_records']
+    )
