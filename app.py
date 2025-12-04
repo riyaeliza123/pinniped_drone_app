@@ -44,10 +44,10 @@ overlap_threshold = st.slider("Overlap / NMS threshold (%)", 0, 100, 30, step=5)
 st.markdown("### 📦 Dropbox ZIP Link")
 st.info("""
 **How to share via Dropbox:**
-1. Upload your images folder as a ZIP file to Dropbox
-2. Right-click the ZIP → Share → Copy link
-3. Paste the link below
-4. Click "Download and Process from Dropbox"
+1. Upload your images folder as a ZIP file to Dropbox. The size of the ZIP **must not exceed 2 GB**.
+2. Right-click the ZIP → Share → Copy link.
+3. Paste the link below and press Enter.
+4. Click "Download and Process from Dropbox".
 
 **Note:** The ZIP will be downloaded to S3, extracted, and processed from there.
 """)
@@ -81,6 +81,17 @@ if st.button("Download and Process from Dropbox"):
             response.raise_for_status()
             
             total_size = int(response.headers.get('content-length', 0))
+            
+            # Check file size limit (2 GB)
+            MAX_SIZE_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+            if total_size > MAX_SIZE_BYTES:
+                st.error(f"❌ ZIP file is too large: {total_size / (1024*1024*1024):.2f} GB")
+                st.warning(f"📦 Maximum allowed size: {MAX_SIZE_BYTES / (1024*1024*1024):.2f} GB")
+                st.info("Please split your images into smaller ZIP files (< 2 GB each) and process them separately.")
+                if s3_folder_key:
+                    delete_s3_folder(S3_BUCKET, s3_folder_key)
+                st.stop()
+            
             downloaded = 0
             
             download_progress = st.progress(0)
@@ -92,9 +103,18 @@ if st.button("Download and Process from Dropbox"):
                 if chunk:
                     zip_bytes.write(chunk)
                     downloaded += len(chunk)
+                    
+                    # Check size during download
+                    if downloaded > MAX_SIZE_BYTES:
+                        st.error(f"❌ ZIP file exceeded 2 GB limit during download")
+                        st.info("Please split your images into smaller ZIP files (< 2 GB each) and process them separately.")
+                        if s3_folder_key:
+                            delete_s3_folder(S3_BUCKET, s3_folder_key)
+                        st.stop()
+                    
                     if total_size > 0:
                         progress = downloaded / total_size
-                        download_progress.progress(progress)
+                        download_progress.progress(min(progress, 1.0))
                         download_status.text(f"Downloaded: {downloaded / (1024*1024):.1f} MB / {total_size / (1024*1024):.1f} MB")
             
             download_status.text("Download complete! Uploading to S3 and extracting...")
