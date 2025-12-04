@@ -38,8 +38,12 @@ except:
 st.title("Pinniped Detection from Drone Imagery of Log Booms")
 
 st.markdown("### ⚙️ Detection Thresholds")
-conf_threshold = st.slider("Confidence threshold (%)", 0, 100, 15, step=5)
-overlap_threshold = st.slider("Overlap / NMS threshold (%)", 0, 100, 30, step=5)
+
+st.info("""
+💡 **Tip:** Leave both at default values if the model is performing well on your images.
+""")
+conf_threshold = st.slider("Confidence threshold (%)", 0, 100, 15, step=5, help="Minimum confidence score (0-100%) for the model to consider a detection as valid. Lower values = more detections (including potential false positives). Higher values = fewer, more confident detections. **Default (15%)** works well for most cases. Increase if you see too many incorrect detections.")
+overlap_threshold = st.slider("Overlap / NMS threshold (%)", 0, 100, 30, step=5, help= "Removes duplicate detections of the same object. Lower values = stricter filtering (fewer boxes). Higher values = more lenient filtering (keeps overlapping boxes). **Default (30%)** works well for most cases. Adjust only if you notice issues with duplicate or missing detections.")
 
 st.markdown("### 📦 Dropbox ZIP Link")
 st.info("""
@@ -70,28 +74,28 @@ image_files = []
 s3_folder_key = None
 
 if st.button("Download and Process from Dropbox"):
-    with st.spinner("Downloading ZIP file from Dropbox..."):
-        try:
-            import uuid
-            session_id = uuid.uuid4().hex
-            s3_folder_key = f"dropbox_extracts/{session_id}/"
-            
-            # Download ZIP file in chunks
-            response = requests.get(direct_url, stream=True, timeout=60)
-            response.raise_for_status()
-            
-            total_size = int(response.headers.get('content-length', 0))
-            
-            # Check file size limit (2 GB)
-            MAX_SIZE_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
-            if total_size > MAX_SIZE_BYTES:
-                st.error(f"❌ ZIP file is too large: {total_size / (1024*1024*1024):.2f} GB")
-                st.warning(f"📦 Maximum allowed size: {MAX_SIZE_BYTES / (1024*1024*1024):.2f} GB")
-                st.info("Please split your images into smaller ZIP files (< 2 GB each) and process them separately.")
-                if s3_folder_key:
-                    delete_s3_folder(S3_BUCKET, s3_folder_key)
-                st.stop()
-            
+    try:
+        import uuid
+        session_id = uuid.uuid4().hex
+        s3_folder_key = f"dropbox_extracts/{session_id}/"
+        
+        # Download ZIP file in chunks
+        response = requests.get(direct_url, stream=True, timeout=60)
+        response.raise_for_status()
+        
+        total_size = int(response.headers.get('content-length', 0))
+        
+        # Check file size limit (2 GB)
+        MAX_SIZE_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+        if total_size > MAX_SIZE_BYTES:
+            st.error(f"❌ ZIP file is too large: {total_size / (1024*1024*1024):.2f} GB")
+            st.warning(f"📦 Maximum allowed size: {MAX_SIZE_BYTES / (1024*1024*1024):.2f} GB")
+            st.info("Please split your images into smaller ZIP files (< 2 GB each) and process them separately.")
+            if s3_folder_key:
+                delete_s3_folder(S3_BUCKET, s3_folder_key)
+            st.stop()
+        
+        with st.spinner("Downloading ZIP file from Dropbox..."):
             downloaded = 0
             
             download_progress = st.progress(0)
@@ -167,25 +171,25 @@ if st.button("Download and Process from Dropbox"):
             
             # Store S3 folder key in session state for cleanup
             st.session_state['s3_folder_key'] = s3_folder_key
-            
-        except requests.RequestException as e:
-            st.error(f"Failed to download from Dropbox: {e}")
-            st.info("Make sure the link is a direct download link (ends with dl=1)")
-            if s3_folder_key:
-                delete_s3_folder(S3_BUCKET, s3_folder_key)
-            st.stop()
-        except zipfile.BadZipFile:
-            st.error("Downloaded file is not a valid ZIP file")
-            if s3_folder_key:
-                delete_s3_folder(S3_BUCKET, s3_folder_key)
-            st.stop()
-        except Exception as e:
-            st.error(f"Error: {e}")
-            import traceback
-            st.text(traceback.format_exc())
-            if s3_folder_key:
-                delete_s3_folder(S3_BUCKET, s3_folder_key)
-            st.stop()
+        
+    except requests.RequestException as e:
+        st.error(f"Failed to download from Dropbox: {e}")
+        st.info("Make sure the link is a direct download link (ends with dl=1)")
+        if s3_folder_key:
+            delete_s3_folder(S3_BUCKET, s3_folder_key)
+        st.stop()
+    except zipfile.BadZipFile:
+        st.error("Downloaded file is not a valid ZIP file")
+        if s3_folder_key:
+            delete_s3_folder(S3_BUCKET, s3_folder_key)
+        st.stop()
+    except Exception as e:
+        st.error(f"Error: {e}")
+        import traceback
+        st.text(traceback.format_exc())
+        if s3_folder_key:
+            delete_s3_folder(S3_BUCKET, s3_folder_key)
+        st.stop()
 else:
     st.stop()
 
