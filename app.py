@@ -23,7 +23,8 @@ from scripts.s3_utils import (
     upload_to_s3_direct, 
     download_from_s3, 
     list_s3_files,
-    delete_s3_folder
+    delete_s3_folder,
+    clean_entire_dropbox_extracts_folder
 )
 
 # Get S3 bucket name
@@ -69,12 +70,57 @@ if 'dropbox.com' not in dropbox_url:
 
 direct_url = dropbox_url.replace('dl=0', 'dl=1').replace('www.dropbox.com', 'dl.dropboxusercontent.com')
 
+# Check if we already have results in session state
+if 'summary_records' in st.session_state and len(st.session_state['summary_records']) > 0:
+    # Display existing results without reprocessing
+    st.success(f"✅ Results ready! Processed {len(st.session_state['summary_records'])} images")
+    
+    st.markdown("### 📊 Memory Usage")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Peak RAM", f"{st.session_state.get('peak_memory', 0):.1f} MB")
+    with col2:
+        st.metric("Final RAM", f"{st.session_state.get('final_memory', 0):.1f} MB")
+    with col3:
+        st.metric("RAM Increase", f"{st.session_state.get('memory_used', 0):.1f} MB")
+
+    st.markdown("### 📷 Annotated Images")
+    for idx, ap in enumerate(st.session_state.get('annotated_paths', [])):
+        try:
+            if idx < len(st.session_state['summary_records']):
+                filename = st.session_state['summary_records'][idx]['image_name']
+            else:
+                filename = f"Image {idx + 1}"
+            
+            st.image(cv2.cvtColor(cv2.imread(ap), cv2.COLOR_BGR2RGB))
+            st.markdown(f"<p style='text-align: center; color: gray; font-size: 12px; margin-top: -15px;'>Img: {filename}</p>", unsafe_allow_html=True)
+        except:
+            st.image(ap)
+            if idx < len(st.session_state['summary_records']):
+                filename = st.session_state['summary_records'][idx]['image_name']
+                st.markdown(f"<p style='text-align: center; color: gray; font-size: 12px; margin-top: -15px;'>Img: {filename}</p>", unsafe_allow_html=True)
+
+    folder_summary_records = compute_unique_counts(
+        st.session_state['grouped_coords'],
+        st.session_state['max_counts']
+    )
+    display_and_download_summary(
+        st.session_state['summary_records'],
+        folder_summary_records,
+        st.session_state['all_detections_records']
+    )
+    st.stop()
+
 # Process Dropbox ZIP
 image_files = []
 s3_folder_key = None
 
 if st.button("Download and Process from Dropbox"):
     try:
+        # Clean S3 before starting
+        with st.spinner("Cleaning S3 workspace..."):
+            clean_entire_dropbox_extracts_folder(S3_BUCKET)
+        
         import uuid
         session_id = uuid.uuid4().hex
         s3_folder_key = f"dropbox_extracts/{session_id}/"
@@ -342,6 +388,11 @@ if image_files:
 
     final_memory = process.memory_info().rss / (1024 * 1024)
     memory_used = final_memory - initial_memory
+    
+    # Store memory stats in session state
+    st.session_state['peak_memory'] = peak_memory
+    st.session_state['final_memory'] = final_memory
+    st.session_state['memory_used'] = memory_used
 
     status_text.markdown(f"**✅ Complete! {len(st.session_state['summary_records'])}/{total_files} processed**")
 
