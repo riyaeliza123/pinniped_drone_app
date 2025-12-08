@@ -309,7 +309,7 @@ if image_files:
                     except:
                         pass
 
-            gsd = compute_gsd({}, img.shape[1])
+            gsd = compute_gsd(img.shape[1])
 
             annotator = sv.BoxAnnotator()
             texts = [f"seal {c*100:.1f}%" for c in detections.confidence]

@@ -1,11 +1,4 @@
-# Centralize configuration constants and Roboflow model setup
-
-import streamlit as st
-from roboflow import Roboflow
-
-# Roboflow model parameters
-PROJECT_NAME = "pinnipeds-drone-imagery"
-MODEL_VERSION = 18
+# Centralize configuration constants
 
 # Image processing constraints
 MAX_PIXELS = 4_000_000
@@ -18,11 +11,3 @@ CAMERA_SENSOR_WIDTHS = {
     "FC3411": 13.2,
     "FC220": 6.3,
 }
-
-try:
-    API_KEY = st.secrets["ROBOWFLOW_API_KEY"]
-    rf = Roboflow(api_key=API_KEY)
-    project = rf.workspace().project(PROJECT_NAME)
-    model = project.version(MODEL_VERSION).model
-except Exception as e:
-    st.error(f"Roboflow error: {e}")

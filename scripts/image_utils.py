@@ -2,15 +2,11 @@
 
 import os, cv2, tempfile
 from scripts.config import MAX_PIXELS, MAX_SIZE_MB, MIN_SCALE_PERCENT, CAMERA_SENSOR_WIDTHS
-from scripts.exif_utils import get_float
 
-def compute_gsd(tags, img_width):
-    alt = get_float(tags.get("GPS GPSAltitude"))
-    focal = get_float(tags.get("EXIF FocalLength"))
-    if alt is None: alt = 20.0
-    if focal is None: focal = 24.0
-    model_name = str(tags.get("Image Model") or "Unknown").strip()
-    sensor_w = CAMERA_SENSOR_WIDTHS.get(model_name, 13.2)
+def compute_gsd(img_width):
+    alt = 20.0
+    focal = 24.0
+    sensor_w = 13.2
     if focal == 0 or img_width == 0:
         return float("inf")
     return (alt * sensor_w) / (focal * img_width)

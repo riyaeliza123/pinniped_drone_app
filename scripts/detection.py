@@ -72,31 +72,6 @@ def parse_roboflow_detections(result_json):
         return sv.Detections(xyxy=np.zeros((0, 4)), confidence=np.array([]), class_id=np.array([]))
     return sv.Detections(xyxy=np.array(xyxy), confidence=np.array(conf), class_id=np.array(cid))
 
-def run_detection_from_url(image_url, confidence_percent, overlap_percent):
-    """Run detection using S3 presigned URL (Roboflow pulls directly from S3)"""
-    try:
-        result = _client.infer(image_url, model_id=MODEL_ID)
-    except Exception as e:
-        raise RuntimeError(f"Roboflow inference failed: {e}")
-
-    det = parse_roboflow_detections(result)
-    conf_cut = confidence_percent / 100.0
-    iou_cut = overlap_percent / 100.0
-
-    mask = det.confidence >= conf_cut
-    det = sv.Detections(
-        xyxy=det.xyxy[mask],
-        confidence=det.confidence[mask],
-        class_id=(det.class_id[mask] if det.class_id.size else np.zeros(np.sum(mask), dtype=int))
-    )
-
-    boxes = det.xyxy.tolist()
-    scores = det.confidence.tolist()
-    boxes, scores = _nms(boxes, scores, iou_cut)
-    if not boxes:
-        return sv.Detections(xyxy=np.zeros((0, 4)), confidence=np.array([]), class_id=np.array([]))
-    return sv.Detections(xyxy=np.array(boxes), confidence=np.array(scores), class_id=np.zeros(len(boxes), dtype=int))
-
 def run_detection_from_local(image_path, confidence_percent, overlap_percent):
     """Run detection from local file path"""
     if not os.path.exists(image_path):
