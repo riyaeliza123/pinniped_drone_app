@@ -36,6 +36,15 @@ except:
         st.error("S3_BUCKET_NAME not configured. Please add it to .streamlit/secrets.toml")
         st.stop()
 
+# Get ODK upload URL
+try:
+    ODK_URL = st.secrets["ODK_UPLOAD_URL"]
+except:
+    ODK_URL = os.getenv("ODK_UPLOAD_URL")
+    if not ODK_URL:
+        st.warning("ODK_UPLOAD_URL not configured. Upload link will not be available.")
+        ODK_URL = None
+
 st.title("Pinniped Detection from Drone Imagery of Log Booms")
 
 st.markdown("### ⚙️ Detection Thresholds")
@@ -453,6 +462,9 @@ if image_files:
     
     **3. Edit & Upload** ✏️  
     Make any necessary corrections to the downloaded CSV files and upload them to ODK using the link below:
-    
-    🔗 [Upload to ODK](https://odk.marinescience.info/-/single/caC28KAc4cd62Al6fech819LCChASEQ?st=YFpu2ZRmZVwwcHhD9x8HDtYdem22R!Xo65$KtI9cFXaA5zDrTDnLenFefUDEUFrJ)
     """)
+    
+    if ODK_URL:
+        st.markdown(f"🔗 [Upload to ODK]({ODK_URL})")
+    else:
+        st.warning("ODK upload link not configured. Please contact your administrator.")
