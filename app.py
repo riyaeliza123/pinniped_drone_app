@@ -439,3 +439,18 @@ if image_files:
         folder_summary_records,
         st.session_state['all_detections_records']
     )
+
+    st.info("""
+    ### 📋 What's Next?
+    
+    **1. Verify Results** 📸  
+    Review the annotated images above. Each detection is marked with a confidence score. Adjust the thresholds above and reprocess if needed.
+    
+    **2. Download Data** 💾  
+    Two CSV files are available for download:
+    - **Per-Image**: Individual detections with bounding boxes and confidence scores
+    - **Per-Location**: Aggregated counts by location and date
+    
+    **3. Edit & Upload** ✏️  
+    Make any necessary corrections to the downloaded CSV files and upload them to ODK using the provided link.
+    """)
