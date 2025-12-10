@@ -452,5 +452,7 @@ if image_files:
     - **Per-Location**: Aggregated counts by location and date
     
     **3. Edit & Upload** ✏️  
-    Make any necessary corrections to the downloaded CSV files and upload them to ODK using the provided link.
+    Make any necessary corrections to the downloaded CSV files and upload them to ODK using the link below:
+    
+    🔗 [Upload to ODK](https://odk.marinescience.info/-/single/caC28KAc4cd62Al6fech819LCChASEQ?st=YFpu2ZRmZVwwcHhD9x8HDtYdem22R!Xo65$KtI9cFXaA5zDrTDnLenFefUDEUFrJ)
     """)
