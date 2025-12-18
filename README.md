@@ -23,13 +23,14 @@ Confusion matrix:
 
 ## Modularized scripts and their functions:
 
-| File             | Responsibility             | Key Functions                                         |
-| ---------------- | -------------------------- | ----------------------------------------------------- |
-| `config.py`      | Configuration & model init | Constants, model                                      |
-| `exif_utils.py`  | EXIF & GPS extraction      | `extract_gps_from_image()`, `get_capture_date_time()` |
-| `image_utils.py` | Image scaling & GSD        | `limit_resolution_to_temp()`, `compute_gsd()`         |
-| `detection.py`   | Inference & parsing        | `run_detection()`, `parse_roboflow_detections()`      |
-| `clustering.py`  | Unique count estimation    | `compute_unique_counts()`                             |
-| `summaries.py`   | Output & CSV               | `display_and_download_summary()`                      |
-| `app.py`         | Streamlit UI               | User interface + orchestration                        |
+| File             | Responsibility                  | Key Functions                                                                                 |
+| ---------------- | ------------------------------- | --------------------------------------------------------------------------------------------- |
+| `config.py`      | Configuration constants         | Image processing limits, camera sensor widths                                                  |
+| `exif_utils.py`  | EXIF & GPS extraction           | `extract_gps_from_image()`, `get_capture_date_time()`, `get_location_name()`                  |
+| `image_utils.py` | Image scaling & GSD             | `limit_resolution_to_temp()`, `progressive_resize_to_temp()`, `compute_gsd()`                  |
+| `detection.py`   | Inference & NMS                 | `run_detection_from_local()`, `parse_roboflow_detections()`                                    |
+| `clustering.py`  | Unique count estimation         | `compute_unique_counts()`                                                                      |
+| `s3_utils.py`    | S3 storage operations           | `upload_to_s3_direct()`, `download_from_s3()`, `list_s3_files()`, `delete_s3_folder()`         |
+| `summaries.py`   | Output & CSV generation         | `display_and_download_summary()`                                                               |
+| `app.py`         | Streamlit UI                    | User interface + orchestration                                                                 |
 
