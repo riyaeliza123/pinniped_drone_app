@@ -8,6 +8,7 @@
 - [Configuration](#configuration)
 - [Deployment](#deployment)
 - [API Reference](#api-reference)
+- [Understanding Detection Thresholds](#understanding-detection-thresholds)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -490,6 +491,97 @@ client.infer(image_path, model_id="pinnipeds-drone-imagery/18")
   "image": {"width": 1024, "height": 768}
 }
 ```
+
+---
+
+## Understanding Detection Thresholds
+
+### Confidence Slider
+
+**What it means**: The confidence slider (0-100%) controls the minimum probability threshold for accepting a detection. The model outputs a confidence score between 0-1 for each detected object, representing how certain it is that the detection is actually a pinniped.
+
+**How it works**:
+- A confidence of 95% means "only show me detections the model is at least 95% confident about"
+- Lower values (10-20%) accept more detections, including uncertain ones
+- Higher values (30-50%) filter out uncertain predictions, keeping only the most reliable detections
+
+**When to adjust**:
+- **Increase confidence** (→ 30-40%):
+  - When you're getting too many false positives (detecting rocks, water, shadows as pinnipeds)
+  - When working with poor image quality or unusual lighting
+  - When accuracy is more important than finding every animal
+  
+- **Decrease confidence** (→ 10-15%):
+  - When you're missing detections (the model isn't finding all the pinnipeds)
+  - When working with high-quality drone imagery with good lighting
+  - When finding every animal is more important than eliminating false positives
+  - In crowded scenes where some pinnipeds may be partially obscured
+
+**Starting recommendation**: Begin at 15% confidence. This provides a good balance for typical drone surveys. Adjust from there based on your image quality and results.
+
+---
+
+### Overlap (NMS) Slider
+
+**What it means**: The overlap slider (0-100%) controls the Non-Maximum Suppression (NMS) threshold, which removes duplicate or overlapping bounding boxes. When the model detects the same pinniped multiple times or detects overlapping boxes around the same animal, NMS merges them into a single detection.
+
+**How it works**:
+- NMS measures the Intersection-over-Union (IoU) between bounding boxes
+- An overlap threshold of 30% means "merge any two boxes that overlap by more than 30%"
+- Lower values (10-20%) are more aggressive at removing duplicates
+- Higher values (50-80%) are less aggressive and keep more overlapping boxes
+
+**When to adjust**:
+- **Decrease overlap** (→ 10-20%):
+  - When you're seeing duplicate detections of the same pinniped (counted twice)
+  - When boxes are stacked or heavily overlapping
+  - When you need cleaner, non-redundant detections
+  
+- **Increase overlap** (→ 50-70%):
+  - When you're losing detections because NMS is merging legitimate separate pinnipeds
+  - When pinnipeds are tightly clustered or huddled together
+  - When you want to detect all individuals, even if some boxes overlap slightly
+
+**Starting recommendation**: Begin at 30% overlap. This removes most duplicates while preserving detections of closely-spaced animals. Adjust only if you notice specific issues with your results.
+
+---
+
+### Typical Tuning Scenarios
+
+**Scenario 1: Too many false positives (rocks, foam, shadows)**
+- Increase confidence: 15% → 25-35%
+- Keep overlap at 30%
+
+**Scenario 2: Missing detections (animals not detected)**
+- Decrease confidence: 15% → 10%
+- Decrease overlap: 30% → 20% (in case the model generates multiple weak predictions)
+
+**Scenario 3: Duplicate detections of the same animal**
+- Keep confidence the same
+- Decrease overlap: 30% → 15-20%
+
+**Scenario 4: Clustered pinnipeds not being distinguished**
+- Increase overlap: 30% → 50%
+- May need to also decrease confidence slightly to ensure all individuals are detected
+
+**Scenario 5: High-altitude survey (small pinnipeds in image)**
+- Decrease confidence: 15% → 8-12%
+- Decrease overlap: 30% → 15-20%
+- The model is less certain at high altitudes, so more lenient thresholds help capture all detections
+
+---
+
+### Iterative Tuning Workflow
+
+1. **Start with defaults**: Confidence 15%, Overlap 30%
+2. **Process a small batch** of representative images (5-10 images from different conditions)
+3. **Review results**:
+   - Count obvious false positives or duplicates
+   - Identify any missed animals
+   - Note the image conditions (altitude, lighting, density)
+4. **Adjust one parameter** based on observed issues
+5. **Reprocess** the same batch to see impact
+6. **Finalize settings** once results look good, then process full dataset
 
 ---
 
