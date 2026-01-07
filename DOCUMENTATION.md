@@ -508,12 +508,12 @@ client.infer(image_path, model_id="pinnipeds-drone-imagery/18")
 **When to adjust**:
 - **Increase confidence** (→ 30-40%):
   - When you're getting too many false positives (detecting rocks, water, shadows as pinnipeds)
-  - When working with poor image quality or unusual lighting
+  - When working with high-quality drone imagery with good lighting (model is confident, you can filter more)
   - When accuracy is more important than finding every animal
   
 - **Decrease confidence** (→ 10-15%):
   - When you're missing detections (the model isn't finding all the pinnipeds)
-  - When working with high-quality drone imagery with good lighting
+  - When working with poor image quality, low lighting, or high altitude
   - When finding every animal is more important than eliminating false positives
   - In crowded scenes where some pinnipeds may be partially obscured
 
