@@ -414,14 +414,14 @@ if image_files:
         except Exception as e:
             st.warning(f"Could not cleanup S3: {e}")
 
-    st.markdown("### 📊 Memory Usage")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Peak RAM", f"{peak_memory:.1f} MB")
-    with col2:
-        st.metric("Final RAM", f"{final_memory:.1f} MB")
-    with col3:
-        st.metric("RAM Increase", f"{memory_used:.1f} MB")
+    # st.markdown("### 📊 Memory Usage")
+    # col1, col2, col3 = st.columns(3)
+    # with col1:
+    #     st.metric("Peak RAM", f"{peak_memory:.1f} MB")
+    # with col2:
+    #     st.metric("Final RAM", f"{final_memory:.1f} MB")
+    # with col3:
+    #     st.metric("RAM Increase", f"{memory_used:.1f} MB")
 
     st.markdown("### 📷 Annotated Images")
     for idx, ap in enumerate(st.session_state.get('annotated_paths', [])):
@@ -467,4 +467,5 @@ if image_files:
     if ODK_URL:
         st.markdown(f"🔗 [Upload to ODK]({ODK_URL})")
     else:
+
         st.warning("ODK upload link not configured. Please contact your administrator.")
